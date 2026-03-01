@@ -58,10 +58,10 @@ Requirements:
 - Node.js 20+
 - Google Chrome installed
 
-Install dependencies:
+Run directly with `npx`:
 
 ```bash
-npm install
+npx amex-cli --help
 ```
 
 ## Quick Start
@@ -69,19 +69,19 @@ npm install
 Store your Amex credentials in the system credential manager:
 
 ```bash
-npm run start -- auth set
+npx amex-cli auth set
 ```
 
 Or use non-interactive CLI arguments:
 
 ```bash
-npm run start -- auth set --username YOUR_USERNAME --password YOUR_PASSWORD
+npx amex-cli auth set --username YOUR_USERNAME --password YOUR_PASSWORD
 ```
 
 Run a sync:
 
 ```bash
-npm run start -- sync
+npx amex-cli sync
 ```
 
 `sync` currently opens a visible Chrome window for login because the Amex sign-in flow is not reliable in pure headless mode yet.
@@ -89,13 +89,13 @@ npm run start -- sync
 Open the interactive app:
 
 ```bash
-npm run start --
+npx amex-cli
 ```
 
 Or explicitly:
 
 ```bash
-npm run start -- interactive
+npx amex-cli interactive
 ```
 
 ## Commands
@@ -103,23 +103,23 @@ npm run start -- interactive
 Main commands:
 
 ```bash
-amex
-amex interactive
-amex sync
-amex sync --debug
-amex show cards
-amex show benefits
-amex show offers
-amex show all
-amex auth set
-amex auth set --username YOUR_USERNAME --password YOUR_PASSWORD
-amex auth status
-amex auth clear
+npx amex-cli
+npx amex-cli interactive
+npx amex-cli sync
+npx amex-cli sync --debug
+npx amex-cli show cards
+npx amex-cli show benefits
+npx amex-cli show offers
+npx amex-cli show all
+npx amex-cli auth set
+npx amex-cli auth set --username YOUR_USERNAME --password YOUR_PASSWORD
+npx amex-cli auth status
+npx amex-cli auth clear
 ```
 
 Notes:
 
-- running `amex` with no command opens the interactive UI
+- running `npx amex-cli` with no command opens the interactive UI
 - `sync` opens a visible Chrome window for login and refreshes local cache
 - `sync --debug` keeps the browser visible and prints extra auth/network logs
 
@@ -140,10 +140,10 @@ The project is designed to work well with AI tools.
 Use JSON output when you want another tool or agent to read the synced data:
 
 ```bash
-npm run start -- show cards --json
-npm run start -- show benefits --json
-npm run start -- show offers --json
-npm run start -- show all --json
+npx amex-cli show cards --json
+npx amex-cli show benefits --json
+npx amex-cli show offers --json
+npx amex-cli show all --json
 ```
 
 This makes it easy to plug into:
@@ -157,8 +157,8 @@ This makes it easy to plug into:
 Example workflows:
 
 ```bash
-npm run start -- show benefits --json > benefits.json
-npm run start -- show offers --json > offers.json
+npx amex-cli show benefits --json > benefits.json
+npx amex-cli show offers --json > offers.json
 ```
 
 Then ask an AI tool to:
