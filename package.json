@@ -2,6 +2,7 @@
   "name": "amex-cli",
   "version": "0.1.0",
   "description": "CLI for syncing and querying Amex card data, benefits, and offers.",
+  "license": "Apache-2.0",
   "type": "module",
   "bin": {
     "amex": "./dist/index.js"
