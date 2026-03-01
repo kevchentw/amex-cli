@@ -1,9 +1,8 @@
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
-import readline from "node:readline";
 
 import { HttpAmexApiClient } from "./api.js";
-import { createAuthInkReporter } from "./auth-ink.js";
+import { createAuthInkReporter, promptForCredentialsInk } from "./auth-ink.js";
 import { PatchrightAmexAuthenticator, disposeRuntimeSession } from "./auth.js";
 import { runInteractiveAppView } from "./app-ink.js";
 import { CacheStore } from "./cache.js";
@@ -356,10 +355,15 @@ function logSyncStep(options: CliOptions, message: string): void {
 }
 
 async function promptForCredentials(): Promise<Credentials> {
+  const inkCredentials = await promptForCredentialsInk(process.stdin.isTTY && process.stdout.isTTY);
+  if (inkCredentials) {
+    return inkCredentials;
+  }
+
   const rl = createInterface({ input, output });
   try {
     const username = (await rl.question("Amex username: ")).trim();
-    const password = await promptHidden("Amex password: ");
+    const password = (await rl.question("Amex password: ")).trim();
     if (!username || !password) {
       throw new CliError("Username and password are required.");
     }
@@ -379,57 +383,6 @@ function readCredentialsFromCli(options: CliOptions): Credentials {
   }
 
   return { username, password };
-}
-
-async function promptHidden(prompt: string): Promise<string> {
-  if (!input.isTTY || !output.isTTY) {
-    const rl = createInterface({ input, output });
-    try {
-      return await rl.question(prompt);
-    } finally {
-      rl.close();
-    }
-  }
-
-  return new Promise<string>((resolve, reject) => {
-    const chars: string[] = [];
-
-    const cleanup = () => {
-      input.setRawMode?.(false);
-      input.pause();
-      input.removeListener("data", onData);
-      output.write("\n");
-    };
-
-    const onData = (chunk: Buffer) => {
-      const value = chunk.toString("utf8");
-
-      if (value === "\r" || value === "\n") {
-        cleanup();
-        resolve(chars.join(""));
-        return;
-      }
-
-      if (value === "\u0003") {
-        cleanup();
-        reject(new CliError("Credential input cancelled."));
-        return;
-      }
-
-      if (value === "\u007f") {
-        chars.pop();
-        return;
-      }
-
-      chars.push(value);
-    };
-
-    output.write(prompt);
-    readline.emitKeypressEvents(input);
-    input.setRawMode?.(true);
-    input.resume();
-    input.on("data", onData);
-  });
 }
 
 function expandTarget(target: DataKind | "all"): DataKind[] {

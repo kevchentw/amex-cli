@@ -1,26 +1,17 @@
 # amex-cli
 
-`amex-cli` is a local-first CLI for syncing American Express card data into structured JSON that works well for both humans and AI tools.
+Turn your Amex account into something you can actually use outside the website.
+
+`amex-cli` pulls your cards, benefits, and offers into a local cache you can browse in a terminal UI or feed straight into AI tools.
 
 ![Interactive demo](./docs/interactive-demo.svg)
 
-GitHub: [kevchentw/amex-cli](https://github.com/kevchentw/amex-cli)
+Why people use it:
 
-It opens Chrome, signs in to Amex, syncs your cached data locally, and gives you two ways to work with it:
-
-- interactive terminal UI for browsing cards, benefits, and offers
-- JSON output for agents, scripts, MCP-style tools, and LLM workflows
-
-## Why this exists
-
-Most Amex data is easy to view in the website, but hard to reuse.
-
-`amex-cli` makes that data:
-
-- local
-- scriptable
-- AI-friendly
-- easy to inspect without logging into the website every time
+- see all your Amex benefits and offers in one place
+- keep a local cache instead of logging into the site every time
+- use an interactive terminal UI for quick browsing
+- output clean JSON for OpenClaw, ChatGPT, Claude, Codex, scripts, or custom tools
 
 Typical use cases:
 
@@ -28,6 +19,52 @@ Typical use cases:
 - filter all offers for a specific card and pass them into another tool
 - keep a local cache of cards, benefits, and offers for later analysis
 - browse everything in a terminal UI without digging through multiple Amex pages
+
+Coming soon:
+
+- add support for enrolling Amex offers directly from the CLI
+- calculate welcome offer progress and spending milestones
+- store transaction history locally for richer analysis and tracking
+
+## Quick Start
+
+If you have never used `npx` before:
+
+- install Node.js first
+- `npx` is included with `npm`, which comes with Node.js
+- after Node.js is installed, you can run `npx amex-cli ...` directly in your terminal
+
+Run directly with `npx`:
+
+```bash
+npx amex-cli --help
+```
+
+Store your Amex credentials in the system credential manager:
+
+```bash
+npx amex-cli auth set
+```
+
+Or use non-interactive CLI arguments:
+
+```bash
+npx amex-cli auth set --username YOUR_USERNAME --password YOUR_PASSWORD
+```
+
+Run a sync:
+
+```bash
+npx amex-cli sync
+```
+
+Open the interactive app:
+
+```bash
+npx amex-cli
+```
+
+`sync` currently opens a visible Chrome window for login because the Amex sign-in flow is not reliable in pure headless mode yet.
 
 ## What it syncs
 
@@ -60,45 +97,7 @@ Requirements:
 - Node.js 20+
 - Google Chrome installed
 
-Run directly with `npx`:
-
-```bash
-npx amex-cli --help
-```
-
-## Quick Start
-
-Store your Amex credentials in the system credential manager:
-
-```bash
-npx amex-cli auth set
-```
-
-Or use non-interactive CLI arguments:
-
-```bash
-npx amex-cli auth set --username YOUR_USERNAME --password YOUR_PASSWORD
-```
-
-Run a sync:
-
-```bash
-npx amex-cli sync
-```
-
-`sync` currently opens a visible Chrome window for login because the Amex sign-in flow is not reliable in pure headless mode yet.
-
-Open the interactive app:
-
-```bash
-npx amex-cli
-```
-
-Or explicitly:
-
-```bash
-npx amex-cli interactive
-```
+No install flow is required for basic usage if you run it with `npx`.
 
 ## Commands
 
