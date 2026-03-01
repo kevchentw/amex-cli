@@ -4,6 +4,8 @@
 
 ![Interactive demo](./docs/interactive-demo.svg)
 
+GitHub: [kevchentw/amex-cli](https://github.com/kevchentw/amex-cli)
+
 It opens Chrome, signs in to Amex, syncs your cached data locally, and gives you two ways to work with it:
 
 - interactive terminal UI for browsing cards, benefits, and offers
