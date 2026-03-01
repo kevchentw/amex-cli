@@ -7,10 +7,24 @@
   "bin": {
     "amex": "./dist/index.js"
   },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "rm -rf dist && tsc -p tsconfig.json",
     "check": "tsc --noEmit -p tsconfig.json",
+    "prepublishOnly": "npm run check && npm run build",
     "start": "node --import tsx ./src/index.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kevchentw/amex-cli"
+  },
+  "homepage": "https://github.com/kevchentw/amex-cli#readme",
+  "bugs": {
+    "url": "https://github.com/kevchentw/amex-cli/issues"
   },
   "engines": {
     "node": ">=20"
