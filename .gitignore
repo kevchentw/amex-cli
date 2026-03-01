@@ -3,3 +3,6 @@ dist/
 .DS_Store
 .amex-cli/
 sample/
+.npm-cache/
+.local/
+.git_allowed_signers

@@ -2,6 +2,8 @@
 
 `amex-cli` is a local-first CLI for syncing American Express card data into structured JSON that works well for both humans and AI tools.
 
+![Interactive demo](./docs/interactive-demo.svg)
+
 It opens Chrome, signs in to Amex, syncs your cached data locally, and gives you two ways to work with it:
 
 - interactive terminal UI for browsing cards, benefits, and offers
