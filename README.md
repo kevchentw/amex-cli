@@ -82,6 +82,8 @@ Run a sync:
 npm run start -- sync
 ```
 
+`sync` currently opens a visible Chrome window for login because the Amex sign-in flow is not reliable in pure headless mode yet.
+
 Open the interactive app:
 
 ```bash
@@ -116,7 +118,7 @@ amex auth clear
 Notes:
 
 - running `amex` with no command opens the interactive UI
-- `sync` opens Chrome and refreshes local cache
+- `sync` opens a visible Chrome window for login and refreshes local cache
 - `sync --debug` keeps the browser visible and prints extra auth/network logs
 
 ## Interactive UI
@@ -128,6 +130,20 @@ The interactive UI includes:
 - `Offers` tab
 
 It supports keyboard navigation, filtering, and search directly in the terminal.
+
+## Screenshots
+
+### Members
+
+![Members UI](./docs/screenshots/cards.png)
+
+### Benefits
+
+![Benefits UI](./docs/screenshots/benefits.png)
+
+### Offers
+
+![Offers UI](./docs/screenshots/offers.png)
 
 ## AI-Friendly Output
 
@@ -184,8 +200,13 @@ Login uses Patchright with a persistent Chrome profile.
 Current behavior:
 
 - sync uses a real browser profile
+- sync currently relies on a visible, non-headless Chrome session
+- headless login still has reliability issues during the Amex sign-in flow and is not supported yet
+- two-step verification may be required during login
 - MFA is supported in the visible browser flow
 - trusted-device state can be reused across runs through the saved browser profile
+
+At the moment, pure headless sign-in is not reliable enough for normal use. The goal is to support a fully headless flow in the future, but the current Amex login experience still requires a visible browser session.
 
 If Amex changes their login flow, device checks, or bot detection, login behavior may also change.
 

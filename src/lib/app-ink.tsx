@@ -83,6 +83,8 @@ export async function runInteractiveAppView(input: {
 
 type TabId = "members" | "benefits" | "offers";
 type BenefitPeriodFilter = "all" | "annual" | "semi-annual" | "quarterly" | "monthly";
+type BenefitStatusFilter = "all" | "in-progress" | "not-started" | "completed";
+type OfferStatusFilter = "all" | "enrolled" | "eligible" | "other";
 
 function InteractiveApp({
   syncedAt,
@@ -115,6 +117,8 @@ function InteractiveApp({
   const [selectedOfferIndex, setSelectedOfferIndex] = useState(0);
   const [showCanceledCards, setShowCanceledCards] = useState(false);
   const [benefitPeriodFilter, setBenefitPeriodFilter] = useState<BenefitPeriodFilter>("all");
+  const [benefitStatusFilter, setBenefitStatusFilter] = useState<BenefitStatusFilter>("all");
+  const [offerStatusFilter, setOfferStatusFilter] = useState<OfferStatusFilter>("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [isSearching, setIsSearching] = useState(false);
 
@@ -145,9 +149,16 @@ function InteractiveApp({
       }),
     [cards, normalizedSearchQuery, showCanceledCards],
   );
-  const visibleBenefitGroups = useMemo(
-    () =>
-      benefits.groups.filter((group) =>
+  const visibleBenefitGroups = useMemo(() => {
+    return benefits.groups
+      .map((group) => ({
+        ...group,
+        rows: group.rows.filter((row) =>
+          benefitStatusFilter === "all" ? true : normalizeBenefitStatus(row.displayStatus) === benefitStatusFilter,
+        ),
+      }))
+      .filter((group) => group.rows.length > 0)
+      .filter((group) =>
         (benefitPeriodFilter === "all"
           ? true
           : normalizeBenefitPeriod(group.trackerDuration) === benefitPeriodFilter) &&
@@ -161,19 +172,33 @@ function InteractiveApp({
               .filter(Boolean)
               .some((value) => value?.toLowerCase().includes(normalizedSearchQuery))
           : true),
-      ),
-    [benefitPeriodFilter, benefits.groups, normalizedSearchQuery],
-  );
+      );
+  }, [benefitPeriodFilter, benefitStatusFilter, benefits.groups, normalizedSearchQuery]);
+  const visibleBenefitSummary = useMemo(() => {
+    const rows = visibleBenefitGroups.flatMap((group) => group.rows);
+    return {
+      totalBenefits: rows.length,
+      completedBenefits: rows.filter((row) => row.displayStatus === "Completed").length,
+      inProgressBenefits: rows.filter((row) => row.displayStatus === "In Progress").length,
+      notStartedBenefits: rows.filter((row) => row.displayStatus === "Not Started").length,
+    };
+  }, [visibleBenefitGroups]);
   const visibleOffers = useMemo(
     () =>
-      offers.filter((offer) =>
-        normalizedSearchQuery
-          ? [offer.title, offer.last4, offer.cardName, offer.status, offer.expiresAt, offer.description]
-              .filter(Boolean)
-              .some((value) => value?.toLowerCase().includes(normalizedSearchQuery))
-          : true,
-      ),
-    [normalizedSearchQuery, offers],
+      offers.filter((offer) => {
+        if (offerStatusFilter !== "all" && normalizeOfferStatus(offer.status) !== offerStatusFilter) {
+          return false;
+        }
+
+        if (!normalizedSearchQuery) {
+          return true;
+        }
+
+        return [offer.title, offer.last4, offer.cardName, offer.status, offer.expiresAt, offer.description]
+          .filter(Boolean)
+          .some((value) => value?.toLowerCase().includes(normalizedSearchQuery));
+      }),
+    [normalizedSearchQuery, offerStatusFilter, offers],
   );
   const visibleOfferGroups = useMemo(() => groupOffers(visibleOffers), [visibleOffers]);
 
@@ -307,6 +332,48 @@ function InteractiveApp({
 
       if (inputKey === "5") {
         setBenefitPeriodFilter("semi-annual");
+        return;
+      }
+
+      if (inputKey === "0") {
+        setBenefitStatusFilter("all");
+        return;
+      }
+
+      if (inputKey === "i") {
+        setBenefitStatusFilter("in-progress");
+        return;
+      }
+
+      if (inputKey === "n") {
+        setBenefitStatusFilter("not-started");
+        return;
+      }
+
+      if (inputKey === "c") {
+        setBenefitStatusFilter("completed");
+        return;
+      }
+    }
+
+    if (selectedTab === "offers") {
+      if (inputKey === "0") {
+        setOfferStatusFilter("all");
+        return;
+      }
+
+      if (inputKey === "e") {
+        setOfferStatusFilter("enrolled");
+        return;
+      }
+
+      if (inputKey === "g") {
+        setOfferStatusFilter("eligible");
+        return;
+      }
+
+      if (inputKey === "o") {
+        setOfferStatusFilter("other");
       }
     }
   });
@@ -317,10 +384,18 @@ function InteractiveApp({
         Amex CLI
       </Text>
       <Text color="gray">
-        Keys: ←/→ switch tab  ↑/↓ move  {selectedTab === "members" ? "a toggle canceled  " : ""}
-        {selectedTab === "benefits" ? "1 all 2 annual 3 monthly 4 quarterly 5 semi-annual  " : ""}
-        / search  x clear  q quit
+        Keys: ←/→ switch tab  ↑/↓ move  / search  x clear  q quit
       </Text>
+      {selectedTab === "members" ? <Text color="gray">Members: a toggle canceled</Text> : null}
+      {selectedTab === "benefits" ? (
+        <>
+          <Text color="gray">Benefits period: 1 all  2 annual  3 monthly  4 quarterly  5 semi-annual</Text>
+          <Text color="gray">Benefits status: 0 all  i in-progress  n not-started  c completed</Text>
+        </>
+      ) : null}
+      {selectedTab === "offers" ? (
+        <Text color="gray">Offers status: 0 all  e enrolled  g eligible  o other</Text>
+      ) : null}
       <Text color={isSearching ? "cyan" : "gray"}>
         Search: {searchQuery || "(none)"} {isSearching ? "| typing... Enter/Esc done" : ""}
       </Text>
@@ -344,16 +419,21 @@ function InteractiveApp({
       ) : null}
       {selectedTab === "benefits" ? (
         <BenefitsTab
-          groups={benefits.groups}
           visibleGroups={visibleBenefitGroups}
-          summary={benefits.summary}
+          summary={visibleBenefitSummary}
           syncedAt={syncedAt.benefits}
           selectedIndex={selectedBenefitIndex}
           filter={benefitPeriodFilter}
+          statusFilter={benefitStatusFilter}
         />
       ) : null}
       {selectedTab === "offers" ? (
-        <OffersTab groups={visibleOfferGroups} syncedAt={syncedAt.offers} selectedIndex={selectedOfferIndex} />
+        <OffersTab
+          groups={visibleOfferGroups}
+          syncedAt={syncedAt.offers}
+          selectedIndex={selectedOfferIndex}
+          statusFilter={offerStatusFilter}
+        />
       ) : null}
     </Box>
   );
@@ -419,19 +499,19 @@ function MembersTab({
 }
 
 function BenefitsTab({
-  groups,
   visibleGroups,
   summary,
   syncedAt,
   selectedIndex,
   filter,
+  statusFilter,
 }: {
-  groups: BenefitsInkGroup[];
   visibleGroups: BenefitsInkGroup[];
   summary: BenefitsInkSummary;
   syncedAt: string | undefined;
   selectedIndex: number;
   filter: BenefitPeriodFilter;
+  statusFilter: BenefitStatusFilter;
 }) {
   const selected = visibleGroups[selectedIndex];
   const { visibleItems, startIndex, hiddenAbove, hiddenBelow } = getVisibleWindow(visibleGroups, selectedIndex, 18);
@@ -448,6 +528,8 @@ function BenefitsTab({
         <Text color="gray">Benefits synced: {syncedAt ?? "unknown"}</Text>
         <Text>  </Text>
         <Text color="gray">Filter: {formatBenefitFilterLabel(filter)}</Text>
+        <Text>  </Text>
+        <Text color="gray">Status: {formatBenefitStatusFilterLabel(statusFilter)}</Text>
       </Box>
       <Box>
         <Text color="gray">Overall:</Text>
@@ -516,10 +598,12 @@ function OffersTab({
   groups,
   syncedAt,
   selectedIndex,
+  statusFilter,
 }: {
   groups: AppOfferGroup[];
   syncedAt: string | undefined;
   selectedIndex: number;
+  statusFilter: OfferStatusFilter;
 }) {
   const selected = groups[selectedIndex];
   const { visibleItems, startIndex, hiddenAbove, hiddenBelow } = getVisibleWindow(groups, selectedIndex, 18);
@@ -532,7 +616,11 @@ function OffersTab({
 
   return (
     <Box flexDirection="column">
-      <Text color="gray">Offers synced: {syncedAt ?? "unknown"}</Text>
+      <Box>
+        <Text color="gray">Offers synced: {syncedAt ?? "unknown"}</Text>
+        <Text>  </Text>
+        <Text color="gray">Status: {formatOfferStatusFilterLabel(statusFilter)}</Text>
+      </Box>
       <Box>
         <Text color="gray">Overall:</Text>
         <Text> </Text>
@@ -783,6 +871,28 @@ function normalizeBenefitPeriod(value: string | undefined): BenefitPeriodFilter 
   }
 }
 
+function normalizeBenefitStatus(value: BenefitsInkRow["displayStatus"]): BenefitStatusFilter {
+  switch (value) {
+    case "In Progress":
+      return "in-progress";
+    case "Not Started":
+      return "not-started";
+    case "Completed":
+      return "completed";
+  }
+}
+
+function normalizeOfferStatus(value: string): OfferStatusFilter {
+  switch (value.toUpperCase()) {
+    case "ENROLLED":
+      return "enrolled";
+    case "ELIGIBLE":
+      return "eligible";
+    default:
+      return "other";
+  }
+}
+
 function formatBenefitFilterLabel(filter: BenefitPeriodFilter): string {
   switch (filter) {
     case "all":
@@ -795,5 +905,31 @@ function formatBenefitFilterLabel(filter: BenefitPeriodFilter): string {
       return "Quarterly";
     case "monthly":
       return "Monthly";
+  }
+}
+
+function formatBenefitStatusFilterLabel(filter: BenefitStatusFilter): string {
+  switch (filter) {
+    case "all":
+      return "All";
+    case "in-progress":
+      return "In Progress";
+    case "not-started":
+      return "Not Started";
+    case "completed":
+      return "Completed";
+  }
+}
+
+function formatOfferStatusFilterLabel(filter: OfferStatusFilter): string {
+  switch (filter) {
+    case "all":
+      return "All";
+    case "enrolled":
+      return "Enrolled";
+    case "eligible":
+      return "Eligible";
+    case "other":
+      return "Other";
   }
 }
