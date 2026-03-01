@@ -1,0 +1,29 @@
+{
+  "name": "amex-cli",
+  "version": "0.1.0",
+  "description": "CLI for syncing and querying Amex card data, benefits, and offers.",
+  "type": "module",
+  "bin": {
+    "amex": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc --noEmit -p tsconfig.json",
+    "start": "node --import tsx ./src/index.ts"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "ink": "^6.8.0",
+    "keytar": "^7.9.0",
+    "patchright": "^1.57.0",
+    "react": "^19.2.4"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.2.14",
+    "tsx": "^4.20.0",
+    "typescript": "^5.8.0"
+  }
+}
