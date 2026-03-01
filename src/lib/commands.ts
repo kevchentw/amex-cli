@@ -17,6 +17,16 @@ const credentialStore = new KeytarCredentialStore();
 const authenticator = new PatchrightAmexAuthenticator();
 const apiClient = new HttpAmexApiClient();
 const ALL_KINDS: DataKind[] = ["cards", "benefits", "offers"];
+const DEFAULT_CLI_OPTIONS: CliOptions = {
+  json: false,
+  debug: false,
+  includeCanceled: false,
+  forceLogin: false,
+  offerStatus: undefined,
+  offerCard: undefined,
+  authUsername: undefined,
+  authPassword: undefined,
+};
 
 export async function handleSync(options: CliOptions): Promise<void> {
   const credentials = await requireCredentials();
@@ -31,13 +41,16 @@ export async function handleSync(options: CliOptions): Promise<void> {
 
 export async function handleShow(target: DataKind | "all", options: CliOptions): Promise<void> {
   const kinds = expandTarget(target);
-  const entries = await Promise.all(
-    kinds.map(async (kind) => [kind, await cacheStore.read(kind)] as const),
-  );
-
-  const missing = entries.filter(([, dataset]) => !dataset).map(([kind]) => kind);
+  let entries = await readCacheEntries(kinds);
+  const missing = getMissingKinds(entries);
   if (missing.length > 0) {
-    throw new CliError(`No cached data for ${missing.join(", ")}. Run sync first.`);
+    const shouldSync = await promptToSyncMissingCache(missing, options);
+    if (!shouldSync) {
+      throw new CliError(`No cached data for ${missing.join(", ")}.`);
+    }
+
+    await handleSync(options);
+    entries = await readCacheEntries(kinds);
   }
 
   const payload = Object.fromEntries(entries);
@@ -93,14 +106,29 @@ export async function handleShow(target: DataKind | "all", options: CliOptions):
 }
 
 export async function handleInteractive(): Promise<void> {
-  const bundle = await cacheStore.readBundle();
+  let bundle = await cacheStore.readBundle();
+  if (!bundle.cards || !bundle.benefits || !bundle.offers) {
+    const missing = [
+      !bundle.cards ? "cards" : undefined,
+      !bundle.benefits ? "benefits" : undefined,
+      !bundle.offers ? "offers" : undefined,
+    ].filter(Boolean) as DataKind[];
+    const shouldSync = await promptToSyncMissingCache(missing, DEFAULT_CLI_OPTIONS);
+    if (!shouldSync) {
+      throw new CliError(`No cached data for ${missing.join(", ")}.`);
+    }
+
+    await handleSync(DEFAULT_CLI_OPTIONS);
+    bundle = await cacheStore.readBundle();
+  }
+
   if (!bundle.cards || !bundle.benefits || !bundle.offers) {
     const missing = [
       !bundle.cards ? "cards" : undefined,
       !bundle.benefits ? "benefits" : undefined,
       !bundle.offers ? "offers" : undefined,
     ].filter(Boolean);
-    throw new CliError(`No cached data for ${missing.join(", ")}. Run sync first.`);
+    throw new CliError(`No cached data for ${missing.join(", ")}.`);
   }
 
   const cards = (bundle.cards.items as CardSummary[]).map((card) => {
@@ -243,6 +271,30 @@ function renderSyncResults(
     `Synced ${ALL_KINDS.join(", ")}.`,
     ...results.map(([kind, dataset]) => `${kind}: ${dataset.items.length} item(s), synced at ${dataset.syncedAt}`),
   ]);
+}
+
+async function readCacheEntries(kinds: DataKind[]) {
+  return Promise.all(kinds.map(async (kind) => [kind, await cacheStore.read(kind)] as const));
+}
+
+function getMissingKinds(entries: Array<readonly [DataKind, Awaited<ReturnType<typeof cacheStore.read>>]>) {
+  return entries.filter(([, dataset]) => !dataset).map(([kind]) => kind);
+}
+
+async function promptToSyncMissingCache(missing: DataKind[], options: Pick<CliOptions, "json" | "debug">): Promise<boolean> {
+  if (options.json || !process.stdin.isTTY || !process.stdout.isTTY) {
+    throw new CliError(`No cached data for ${missing.join(", ")}. Run sync first.`);
+  }
+
+  const rl = createInterface({ input, output });
+  try {
+    const answer = (await rl.question(
+      `No cached data for ${missing.join(", ")}. Sync now? [Y/n] `,
+    )).trim().toLowerCase();
+    return answer === "" || answer === "y" || answer === "yes";
+  } finally {
+    rl.close();
+  }
 }
 
 async function requireCredentials(): Promise<Credentials> {

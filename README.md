@@ -131,20 +131,6 @@ The interactive UI includes:
 
 It supports keyboard navigation, filtering, and search directly in the terminal.
 
-## Screenshots
-
-### Members
-
-![Members UI](./docs/screenshots/cards.png)
-
-### Benefits
-
-![Benefits UI](./docs/screenshots/benefits.png)
-
-### Offers
-
-![Offers UI](./docs/screenshots/offers.png)
-
 ## AI-Friendly Output
 
 The project is designed to work well with AI tools.
