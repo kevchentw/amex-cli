@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Box, render, Text, useApp, useInput } from "ink";
+import type { OfferEnrollmentResult, OfferEnrollmentTarget } from "./types.js";
 
 export interface AppCardsItem {
   id: string;
@@ -16,15 +17,18 @@ export interface AppCardsItem {
 
 export interface AppOfferItem {
   id: string;
+  cardId: string;
   title: string;
   last4: string;
   cardName: string;
   status: string;
   expiresAt: string | undefined;
   description: string | undefined;
+  locale: string;
 }
 
 interface AppOfferGroup {
+  id: string;
   title: string;
   description: string | undefined;
   rows: AppOfferItem[];
@@ -35,6 +39,23 @@ interface OfferStatusCounts {
   enrolled: number;
   eligible: number;
   other: number;
+}
+
+interface OfferActivityItem {
+  tone: "info" | "success" | "error";
+  text: string;
+}
+
+interface OfferActivityScope {
+  kind: "offer" | "all";
+  offerId?: string;
+  title: string;
+}
+
+interface OfferEnrollmentProgress {
+  sessionMessage?: string;
+  actionMessage?: string;
+  activity?: OfferActivityItem;
 }
 
 export interface BenefitsInkSummary {
@@ -70,6 +91,21 @@ export async function runInteractiveAppView(input: {
     summary: BenefitsInkSummary;
   };
   offers: AppOfferItem[];
+  onEnrollOffer?: (
+    targets: OfferEnrollmentTarget[],
+    onProgress?: (progress: OfferEnrollmentProgress) => void,
+  ) => Promise<{
+    results: OfferEnrollmentResult[];
+    offers: AppOfferItem[];
+    syncedAt: string;
+    sessionStatus?: string | undefined;
+  }>;
+  onEnrollAllOffers?: (onProgress?: (progress: OfferEnrollmentProgress) => void) => Promise<{
+    results: OfferEnrollmentResult[];
+    offers: AppOfferItem[];
+    syncedAt: string;
+    sessionStatus?: string | undefined;
+  }>;
 }): Promise<void> {
   const instance = render(<InteractiveApp {...input} />, {
     stdout: process.stdout,
@@ -85,12 +121,15 @@ type TabId = "members" | "benefits" | "offers";
 type BenefitPeriodFilter = "all" | "annual" | "semi-annual" | "quarterly" | "monthly";
 type BenefitStatusFilter = "all" | "in-progress" | "not-started" | "completed";
 type OfferStatusFilter = "all" | "enrolled" | "eligible" | "other";
+type OffersPane = "groups" | "rows";
 
 function InteractiveApp({
   syncedAt,
   cards,
   benefits,
   offers,
+  onEnrollOffer,
+  onEnrollAllOffers,
 }: {
   syncedAt: {
     cards?: string;
@@ -103,6 +142,21 @@ function InteractiveApp({
     summary: BenefitsInkSummary;
   };
   offers: AppOfferItem[];
+  onEnrollOffer?: (
+    targets: OfferEnrollmentTarget[],
+    onProgress?: (progress: OfferEnrollmentProgress) => void,
+  ) => Promise<{
+    results: OfferEnrollmentResult[];
+    offers: AppOfferItem[];
+    syncedAt: string;
+    sessionStatus?: string | undefined;
+  }>;
+  onEnrollAllOffers?: (onProgress?: (progress: OfferEnrollmentProgress) => void) => Promise<{
+    results: OfferEnrollmentResult[];
+    offers: AppOfferItem[];
+    syncedAt: string;
+    sessionStatus?: string | undefined;
+  }>;
 }) {
   const { exit } = useApp();
   const tabs: Array<{ id: TabId; label: string }> = [
@@ -115,15 +169,40 @@ function InteractiveApp({
   const [selectedCardIndex, setSelectedCardIndex] = useState(0);
   const [selectedBenefitIndex, setSelectedBenefitIndex] = useState(0);
   const [selectedOfferIndex, setSelectedOfferIndex] = useState(0);
+  const [selectedOfferId, setSelectedOfferId] = useState<string | undefined>();
+  const [selectedOfferRowIndex, setSelectedOfferRowIndex] = useState(0);
+  const [activeOffersPane, setActiveOffersPane] = useState<OffersPane>("groups");
   const [showCanceledCards, setShowCanceledCards] = useState(false);
   const [benefitPeriodFilter, setBenefitPeriodFilter] = useState<BenefitPeriodFilter>("all");
   const [benefitStatusFilter, setBenefitStatusFilter] = useState<BenefitStatusFilter>("all");
   const [offerStatusFilter, setOfferStatusFilter] = useState<OfferStatusFilter>("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [isSearching, setIsSearching] = useState(false);
+  const [offersState, setOffersState] = useState(offers);
+  const [syncedAtState, setSyncedAtState] = useState(syncedAt);
+  const [offerActionMessage, setOfferActionMessage] = useState<string | undefined>();
+  const [offerSessionMessage, setOfferSessionMessage] = useState<string | undefined>();
+  const [offerActionPending, setOfferActionPending] = useState(false);
+  const [selectedOfferRows, setSelectedOfferRows] = useState<Set<string>>(new Set());
+  const [offerActivity, setOfferActivity] = useState<OfferActivityItem[]>([]);
+  const [offerActivityScope, setOfferActivityScope] = useState<OfferActivityScope | undefined>();
 
   const selectedTab = tabs[selectedTabIndex]?.id ?? "members";
   const normalizedSearchQuery = searchQuery.trim().toLowerCase();
+  const appendOfferActivity = (tone: OfferActivityItem["tone"], text: string) => {
+    setOfferActivity((current) => [...current, { tone, text }].slice(-8));
+  };
+  const applyOfferProgress = (progress: OfferEnrollmentProgress) => {
+    if (progress.sessionMessage !== undefined) {
+      setOfferSessionMessage(progress.sessionMessage);
+    }
+    if (progress.actionMessage !== undefined) {
+      setOfferActionMessage(progress.actionMessage);
+    }
+    if (progress.activity) {
+      appendOfferActivity(progress.activity.tone, progress.activity.text);
+    }
+  };
   const visibleCards = useMemo(
     () =>
       cards.filter((card) => {
@@ -185,7 +264,7 @@ function InteractiveApp({
   }, [visibleBenefitGroups]);
   const visibleOffers = useMemo(
     () =>
-      offers.filter((offer) => {
+      offersState.filter((offer) => {
         if (offerStatusFilter !== "all" && normalizeOfferStatus(offer.status) !== offerStatusFilter) {
           return false;
         }
@@ -198,7 +277,7 @@ function InteractiveApp({
           .filter(Boolean)
           .some((value) => value?.toLowerCase().includes(normalizedSearchQuery));
       }),
-    [normalizedSearchQuery, offerStatusFilter, offers],
+    [normalizedSearchQuery, offerStatusFilter, offersState],
   );
   const visibleOfferGroups = useMemo(() => groupOffers(visibleOffers), [visibleOffers]);
 
@@ -226,14 +305,52 @@ function InteractiveApp({
 
   useEffect(() => {
     if (visibleOfferGroups.length === 0) {
+      setSelectedOfferId(undefined);
       setSelectedOfferIndex(0);
       return;
+    }
+
+    if (selectedOfferId) {
+      const preservedIndex = visibleOfferGroups.findIndex((group) => group.id === selectedOfferId);
+      if (preservedIndex !== -1 && preservedIndex !== selectedOfferIndex) {
+        setSelectedOfferIndex(preservedIndex);
+        return;
+      }
     }
 
     if (selectedOfferIndex >= visibleOfferGroups.length) {
       setSelectedOfferIndex(visibleOfferGroups.length - 1);
     }
-  }, [selectedOfferIndex, visibleOfferGroups]);
+  }, [selectedOfferId, selectedOfferIndex, visibleOfferGroups]);
+
+  const selectedOfferGroup = visibleOfferGroups[selectedOfferIndex];
+  const selectedOfferGroupRows = selectedOfferGroup?.rows ?? [];
+  const visibleOfferActivity =
+    offerActivityScope &&
+    (offerActivityScope.kind === "all" || offerActivityScope.offerId === selectedOfferGroup?.id)
+      ? offerActivity
+      : [];
+  const visibleOfferActionMessage =
+    offerActivityScope &&
+    (offerActivityScope.kind === "all" || offerActivityScope.offerId === selectedOfferGroup?.id)
+      ? offerActionMessage
+      : undefined;
+  const visibleOfferSessionMessage =
+    offerActivityScope &&
+    (offerActivityScope.kind === "all" || offerActivityScope.offerId === selectedOfferGroup?.id)
+      ? offerSessionMessage
+      : undefined;
+
+  useEffect(() => {
+    if (selectedOfferGroupRows.length === 0) {
+      setSelectedOfferRowIndex(0);
+      return;
+    }
+
+    if (selectedOfferRowIndex >= selectedOfferGroupRows.length) {
+      setSelectedOfferRowIndex(selectedOfferGroupRows.length - 1);
+    }
+  }, [selectedOfferGroupRows, selectedOfferRowIndex]);
 
   useInput((inputKey, key) => {
     if (isSearching) {
@@ -268,12 +385,22 @@ function InteractiveApp({
       return;
     }
 
+    if (selectedTab === "offers" && key.leftArrow) {
+      setActiveOffersPane("groups");
+      return;
+    }
+
+    if (selectedTab === "offers" && key.rightArrow) {
+      setActiveOffersPane("rows");
+      return;
+    }
+
     if (key.leftArrow) {
       setSelectedTabIndex((current) => (current === 0 ? tabs.length - 1 : current - 1));
       return;
     }
 
-    if (key.rightArrow || key.tab) {
+    if (key.tab) {
       setSelectedTabIndex((current) => (current === tabs.length - 1 ? 0 : current + 1));
       return;
     }
@@ -283,9 +410,15 @@ function InteractiveApp({
         setSelectedCardIndex((current) => (current === 0 ? Math.max(visibleCards.length - 1, 0) : current - 1));
       } else if (selectedTab === "benefits") {
         setSelectedBenefitIndex((current) => (current === 0 ? Math.max(visibleBenefitGroups.length - 1, 0) : current - 1));
+      } else if (activeOffersPane === "groups") {
+        setSelectedOfferIndex((current) => {
+          const next = current === 0 ? Math.max(visibleOfferGroups.length - 1, 0) : current - 1;
+          setSelectedOfferId(visibleOfferGroups[next]?.id);
+          return next;
+        });
       } else {
-        setSelectedOfferIndex((current) =>
-          current === 0 ? Math.max(visibleOfferGroups.length - 1, 0) : current - 1,
+        setSelectedOfferRowIndex((current) =>
+          current === 0 ? Math.max(selectedOfferGroupRows.length - 1, 0) : current - 1,
         );
       }
       return;
@@ -298,8 +431,16 @@ function InteractiveApp({
         setSelectedBenefitIndex((current) =>
           current === visibleBenefitGroups.length - 1 ? 0 : current + 1,
         );
+      } else if (activeOffersPane === "groups") {
+        setSelectedOfferIndex((current) => {
+          const next = current === visibleOfferGroups.length - 1 ? 0 : current + 1;
+          setSelectedOfferId(visibleOfferGroups[next]?.id);
+          return next;
+        });
       } else {
-        setSelectedOfferIndex((current) => (current === visibleOfferGroups.length - 1 ? 0 : current + 1));
+        setSelectedOfferRowIndex((current) =>
+          current === selectedOfferGroupRows.length - 1 ? 0 : current + 1,
+        );
       }
       return;
     }
@@ -357,6 +498,249 @@ function InteractiveApp({
     }
 
     if (selectedTab === "offers") {
+      if (inputKey === "c") {
+        setSelectedOfferRows(new Set());
+        setOfferActionMessage("Cleared selected cards.");
+        appendOfferActivity("info", "Cleared selected cards.");
+        return;
+      }
+
+      if (inputKey === " ") {
+        const selectedRow = selectedOfferGroupRows[selectedOfferRowIndex];
+        if (!selectedRow || normalizeOfferStatus(selectedRow.status) !== "eligible") {
+          setOfferActionMessage("Only eligible cards can be selected for enrollment.");
+          appendOfferActivity("error", "Only eligible cards can be selected for enrollment.");
+          return;
+        }
+
+        const key = offerRowKey(selectedRow);
+        setSelectedOfferRows((current) => {
+          const next = new Set(current);
+          if (next.has(key)) {
+            next.delete(key);
+          } else {
+            next.add(key);
+          }
+          return next;
+        });
+        return;
+      }
+
+      if (key.return && !offerActionPending && onEnrollOffer) {
+        const selectedTargets = selectedOfferGroupRows
+          .filter((row) => selectedOfferRows.has(offerRowKey(row)))
+          .filter((row) => normalizeOfferStatus(row.status) === "eligible");
+
+        if (selectedTargets.length === 0) {
+          setOfferActionMessage("No eligible cards selected. Use [ ] to move and Space to toggle cards.");
+          appendOfferActivity("error", "No eligible cards selected. Use [ ] to move and Space to toggle cards.");
+          return;
+        }
+
+        setOfferActionPending(true);
+        setOfferSessionMessage("Checking existing browser session...");
+        setOfferActionMessage(`Enrolling ${selectedTargets.length} selected card(s) for ${selectedOfferGroup?.title ?? "offer"}...`);
+        setOfferActivity([]);
+        setOfferActivityScope({
+          kind: "offer",
+          title: selectedOfferGroup?.title ?? "offer",
+          ...(selectedOfferGroup?.id ? { offerId: selectedOfferGroup.id } : {}),
+        });
+        appendOfferActivity(
+          "info",
+          `Starting ${selectedOfferGroup?.title ?? "offer"} on ${selectedTargets.length} selected card(s)...`,
+        );
+        void onEnrollOffer(
+          selectedTargets.map((row) => ({
+            offerId: row.id,
+            accountNumberProxy: row.cardId,
+            last4: row.last4,
+            cardName: row.cardName,
+            locale: row.locale,
+          })),
+          applyOfferProgress,
+        )
+          .then((result) => {
+            const succeeded = result.results.filter((entry) => entry.statusPurpose === "SUCCESS");
+            const failed = result.results.filter((entry) => entry.statusPurpose !== "SUCCESS");
+            if (result.sessionStatus === "reused") {
+              setOfferSessionMessage("Session: reused saved browser session.");
+              appendOfferActivity("info", "Reused existing browser session.");
+            } else if (result.sessionStatus === "reused-live") {
+              setOfferSessionMessage("Session: reused active interactive session.");
+              appendOfferActivity("info", "Reused active interactive session.");
+            } else if (result.sessionStatus === "fallback-fresh") {
+              setOfferSessionMessage("Session: saved session invalid, used fresh login.");
+              appendOfferActivity("info", "Existing session was invalid. Fell back to a fresh login.");
+            } else if (result.sessionStatus === "fresh") {
+              setOfferSessionMessage("Session: used fresh browser login.");
+              appendOfferActivity("info", "Used a fresh browser login.");
+            } else {
+              setOfferSessionMessage(undefined);
+            }
+            setOffersState(result.offers);
+            setSyncedAtState((current) => ({ ...current, offers: result.syncedAt }));
+            setSelectedOfferRows(new Set());
+            setSelectedOfferId(selectedOfferGroup?.id);
+            setOfferActionMessage(
+              `${selectedOfferGroup?.title ?? "offer"}: ${succeeded.length} succeeded, ${failed.length} failed.`,
+            );
+            appendOfferActivity(
+              "success",
+              `Completed ${selectedOfferGroup?.title ?? "offer"}: ${succeeded.length} succeeded, ${failed.length} failed.`,
+            );
+            for (const enrollment of result.results) {
+              appendOfferActivity(
+                enrollment.statusPurpose === "SUCCESS" ? "success" : "error",
+                `${enrollment.last4} | ${enrollment.cardName} | ${enrollment.statusMessage}`,
+              );
+            }
+          })
+          .catch((error: unknown) => {
+            setOfferActionMessage(error instanceof Error ? error.message : String(error));
+            appendOfferActivity("error", error instanceof Error ? error.message : String(error));
+          })
+          .finally(() => {
+            setOfferActionPending(false);
+          });
+        return;
+      }
+
+      if (inputKey === "f" && !offerActionPending && onEnrollOffer) {
+        const selectedGroup = visibleOfferGroups[selectedOfferIndex];
+        if (!selectedGroup) {
+          return;
+        }
+
+        const eligibleRows = selectedGroup.rows.filter((row) => normalizeOfferStatus(row.status) === "eligible");
+        if (eligibleRows.length === 0) {
+          setOfferActionMessage("Selected offer has no eligible cards to enroll.");
+          appendOfferActivity("error", "Selected offer has no eligible cards to enroll.");
+          return;
+        }
+
+        setOfferActionPending(true);
+        setOfferSessionMessage("Checking existing browser session...");
+        setOfferActionMessage(`Enrolling ${selectedGroup.title} on ${eligibleRows.length} eligible card(s)...`);
+        setOfferActivity([]);
+        setOfferActivityScope({
+          kind: "offer",
+          offerId: selectedGroup.id,
+          title: selectedGroup.title,
+        });
+        appendOfferActivity("info", `Starting ${selectedGroup.title} on ${eligibleRows.length} eligible card(s)...`);
+        void onEnrollOffer(
+          eligibleRows.map((row) => ({
+            offerId: row.id,
+            accountNumberProxy: row.cardId,
+            last4: row.last4,
+            cardName: row.cardName,
+            locale: row.locale,
+          })),
+          applyOfferProgress,
+        )
+          .then((result) => {
+            const succeeded = result.results.filter((entry) => entry.statusPurpose === "SUCCESS");
+            const failed = result.results.filter((entry) => entry.statusPurpose !== "SUCCESS");
+            if (result.sessionStatus === "reused") {
+              setOfferSessionMessage("Session: reused saved browser session.");
+              appendOfferActivity("info", "Reused existing browser session.");
+            } else if (result.sessionStatus === "reused-live") {
+              setOfferSessionMessage("Session: reused active interactive session.");
+              appendOfferActivity("info", "Reused active interactive session.");
+            } else if (result.sessionStatus === "fallback-fresh") {
+              setOfferSessionMessage("Session: saved session invalid, used fresh login.");
+              appendOfferActivity("info", "Existing session was invalid. Fell back to a fresh login.");
+            } else if (result.sessionStatus === "fresh") {
+              setOfferSessionMessage("Session: used fresh browser login.");
+              appendOfferActivity("info", "Used a fresh browser login.");
+            } else {
+              setOfferSessionMessage(undefined);
+            }
+            setOffersState(result.offers);
+            setSyncedAtState((current) => ({ ...current, offers: result.syncedAt }));
+            setSelectedOfferRows(new Set());
+            setSelectedOfferId(selectedGroup.id);
+            setOfferActionMessage(
+              `${selectedGroup.title}: ${succeeded.length} succeeded, ${failed.length} failed.`,
+            );
+            appendOfferActivity(
+              "success",
+              `Completed ${selectedGroup.title}: ${succeeded.length} succeeded, ${failed.length} failed.`,
+            );
+            for (const enrollment of result.results) {
+              appendOfferActivity(
+                enrollment.statusPurpose === "SUCCESS" ? "success" : "error",
+                `${enrollment.last4} | ${enrollment.cardName} | ${enrollment.statusMessage}`,
+              );
+            }
+          })
+          .catch((error: unknown) => {
+            setOfferActionMessage(error instanceof Error ? error.message : String(error));
+            appendOfferActivity("error", error instanceof Error ? error.message : String(error));
+          })
+          .finally(() => {
+            setOfferActionPending(false);
+          });
+        return;
+      }
+
+      if (inputKey === "a" && !offerActionPending && onEnrollAllOffers) {
+        setOfferActionPending(true);
+        setOfferSessionMessage("Checking existing browser session...");
+        setOfferActionMessage("Enrolling all eligible offers...");
+        setOfferActivity([]);
+        setOfferActivityScope({
+          kind: "all",
+          title: "All eligible offers",
+        });
+        appendOfferActivity("info", "Starting all eligible offers enrollment...");
+        void onEnrollAllOffers(applyOfferProgress)
+          .then((result) => {
+            const succeeded = result.results.filter((entry) => entry.statusPurpose === "SUCCESS");
+            const failed = result.results.filter((entry) => entry.statusPurpose !== "SUCCESS");
+            if (result.sessionStatus === "reused") {
+              setOfferSessionMessage("Session: reused saved browser session.");
+              appendOfferActivity("info", "Reused existing browser session.");
+            } else if (result.sessionStatus === "reused-live") {
+              setOfferSessionMessage("Session: reused active interactive session.");
+              appendOfferActivity("info", "Reused active interactive session.");
+            } else if (result.sessionStatus === "fallback-fresh") {
+              setOfferSessionMessage("Session: saved session invalid, used fresh login.");
+              appendOfferActivity("info", "Existing session was invalid. Fell back to a fresh login.");
+            } else if (result.sessionStatus === "fresh") {
+              setOfferSessionMessage("Session: used fresh browser login.");
+              appendOfferActivity("info", "Used a fresh browser login.");
+            } else {
+              setOfferSessionMessage(undefined);
+            }
+            setOffersState(result.offers);
+            setSyncedAtState((current) => ({ ...current, offers: result.syncedAt }));
+            setSelectedOfferRows(new Set());
+            setOfferActionMessage(
+              `${new Set(result.results.map((row) => row.offerId)).size} offer(s): ${succeeded.length} succeeded, ${failed.length} failed.`,
+            );
+            appendOfferActivity(
+              "success",
+              `Completed ${new Set(result.results.map((row) => row.offerId)).size} offer(s): ${succeeded.length} succeeded, ${failed.length} failed.`,
+            );
+            for (const enrollment of result.results) {
+              appendOfferActivity(
+                enrollment.statusPurpose === "SUCCESS" ? "success" : "error",
+                `${enrollment.offerId} | ${enrollment.last4} | ${enrollment.statusMessage}`,
+              );
+            }
+          })
+          .catch((error: unknown) => {
+            setOfferActionMessage(error instanceof Error ? error.message : String(error));
+            appendOfferActivity("error", error instanceof Error ? error.message : String(error));
+          })
+          .finally(() => {
+            setOfferActionPending(false);
+          });
+        return;
+      }
+
       if (inputKey === "0") {
         setOfferStatusFilter("all");
         return;
@@ -384,17 +768,21 @@ function InteractiveApp({
         Amex CLI
       </Text>
       <Text color="gray">
-        Keys: ←/→ switch tab  ↑/↓ move  / search  x clear  q quit
+        Keys: [Tab] switch tab  [↑/↓] move  [/] search  [x] clear  [q] quit
       </Text>
-      {selectedTab === "members" ? <Text color="gray">Members: a toggle canceled</Text> : null}
+      {selectedTab === "members" ? <Text color="gray">Members: [a] toggle canceled</Text> : null}
       {selectedTab === "benefits" ? (
         <>
-          <Text color="gray">Benefits period: 1 all  2 annual  3 monthly  4 quarterly  5 semi-annual</Text>
-          <Text color="gray">Benefits status: 0 all  i in-progress  n not-started  c completed</Text>
+          <Text color="gray">Benefits period: [1] all  [2] annual  [3] monthly  [4] quarterly  [5] semi-annual</Text>
+          <Text color="gray">Benefits status: [0] all  [i] in-progress  [n] not-started  [c] completed</Text>
         </>
       ) : null}
       {selectedTab === "offers" ? (
-        <Text color="gray">Offers status: 0 all  e enrolled  g eligible  o other</Text>
+        <>
+          <Text color="gray">Offers nav: [←/→] switch pane  [↑/↓] move in focused pane  [Space] toggle card  [Enter] add selected</Text>
+          <Text color="gray">Offers actions: [a] add all offers  [f] add focused offer to all cards  [c] clear selected</Text>
+          <Text color="gray">Offers filters: [0] all  [e] enrolled  [g] eligible  [o] other</Text>
+        </>
       ) : null}
       <Text color={isSearching ? "cyan" : "gray"}>
         Search: {searchQuery || "(none)"} {isSearching ? "| typing... Enter/Esc done" : ""}
@@ -430,9 +818,17 @@ function InteractiveApp({
       {selectedTab === "offers" ? (
         <OffersTab
           groups={visibleOfferGroups}
-          syncedAt={syncedAt.offers}
+          syncedAt={syncedAtState.offers}
           selectedIndex={selectedOfferIndex}
           statusFilter={offerStatusFilter}
+          activity={visibleOfferActivity}
+          actionPending={offerActionPending}
+          selectedRowIndex={selectedOfferRowIndex}
+          selectedRows={selectedOfferRows}
+          activePane={activeOffersPane}
+          {...(visibleOfferSessionMessage ? { sessionMessage: visibleOfferSessionMessage } : {})}
+          {...(offerActivityScope ? { activityScope: offerActivityScope } : {})}
+          {...(visibleOfferActionMessage ? { actionMessage: visibleOfferActionMessage } : {})}
         />
       ) : null}
     </Box>
@@ -599,11 +995,27 @@ function OffersTab({
   syncedAt,
   selectedIndex,
   statusFilter,
+  activity,
+  sessionMessage,
+  activityScope,
+  actionMessage,
+  actionPending,
+  selectedRowIndex,
+  selectedRows,
+  activePane,
 }: {
   groups: AppOfferGroup[];
   syncedAt: string | undefined;
   selectedIndex: number;
   statusFilter: OfferStatusFilter;
+  activity: OfferActivityItem[];
+  sessionMessage?: string;
+  activityScope?: OfferActivityScope;
+  actionMessage?: string;
+  actionPending: boolean;
+  selectedRowIndex: number;
+  selectedRows: Set<string>;
+  activePane: OffersPane;
 }) {
   const selected = groups[selectedIndex];
   const { visibleItems, startIndex, hiddenAbove, hiddenBelow } = getVisibleWindow(groups, selectedIndex, 18);
@@ -643,8 +1055,9 @@ function OffersTab({
             const actualIndex = startIndex + index;
             const selectedRow = actualIndex === selectedIndex;
             const counts = summarizeOfferStatusCounts(group.rows);
+            const color = selectedRow ? (activePane === "groups" ? "cyan" : "white") : undefined;
             return (
-              <Text key={group.title} {...(selectedRow ? { color: "cyan" as const } : {})} bold={selectedRow}>
+              <Text key={group.id} {...(color ? { color } : {})} bold={selectedRow}>
                 {selectedRow ? "> " : "  "}
                 {group.title}{" "}
                 <Text color="green">{counts.enrolled}</Text>
@@ -663,33 +1076,63 @@ function OffersTab({
         </Box>
 
         <Box flexDirection="column" flexGrow={1}>
-          <Text bold>{selected.title}</Text>
-          <Text color="gray">
-            Summary: Enrolled {selectedCounts.enrolled}, Eligible {selectedCounts.eligible}
-            {selectedCounts.other > 0 ? `, Other ${selectedCounts.other}` : ""}
-          </Text>
-          {selected.description ? (
-            <Box marginTop={1}>
-              <Text>{selected.description}</Text>
+          <Box flexDirection="column" flexGrow={1}>
+            <Text bold>{selected.title}</Text>
+            <Text color="gray">Offer ID: {selected.id}</Text>
+            <Text color="gray">
+              Summary: Enrolled {selectedCounts.enrolled}, Eligible {selectedCounts.eligible}
+              {selectedCounts.other > 0 ? `, Other ${selectedCounts.other}` : ""}
+            </Text>
+            {selected.description ? (
+              <Box marginTop={1}>
+                <Text>{selected.description}</Text>
+              </Box>
+            ) : null}
+            <Box flexDirection="column" marginTop={1}>
+              {selected.rows.map((row, index) => (
+                <Text key={`${selected.title}:${row.id}:${row.last4}`}>
+                  <Text color={index === selectedRowIndex ? (activePane === "rows" ? "cyan" : "white") : "gray"}>
+                    {index === selectedRowIndex ? "> " : "  "}
+                  </Text>
+                  <Text color={selectedRows.has(offerRowKey(row)) ? "green" : "gray"}>
+                    {normalizeOfferStatus(row.status) === "eligible" ? (selectedRows.has(offerRowKey(row)) ? "[x]" : "[ ]") : " - "}
+                  </Text>
+                  <Text> </Text>
+                  <Text color="cyan">{row.last4}</Text>
+                  <Text> | </Text>
+                  <Text>{row.cardName}</Text>
+                  <Text> | </Text>
+                  <Text color={offerStatusColor(row.status)}>{row.status}</Text>
+                  {row.expiresAt ? (
+                    <>
+                      <Text> | </Text>
+                      <Text color="yellow">{row.expiresAt}</Text>
+                    </>
+                  ) : null}
+                </Text>
+              ))}
+            </Box>
+          </Box>
+
+          {actionMessage || activity.length > 0 ? (
+            <Box flexDirection="column" borderStyle="round" borderColor={actionPending ? "yellow" : "gray"} paddingX={1} marginTop={1}>
+              <Text color="gray">
+                Enrollment
+                {activityScope ? ` · ${activityScope.kind === "all" ? activityScope.title : activityScope.title}` : ""}
+              </Text>
+              {sessionMessage ? <Text color="gray">{sessionMessage}</Text> : null}
+              {actionMessage ? (
+                <Text color={actionPending ? "yellow" : "green"}>{actionMessage}</Text>
+              ) : null}
+              {activity.length > 0
+                ? activity.slice(-4).map((item, index) => (
+                    <Text key={`${index}:${item.text}`} color={offerActivityColor(item.tone)}>
+                      {item.tone === "info" ? "·" : item.tone === "success" ? "+" : "!"} {item.text}
+                    </Text>
+                  ))
+                : null}
             </Box>
           ) : null}
-          <Box flexDirection="column" marginTop={1}>
-            {selected.rows.map((row) => (
-              <Text key={`${selected.title}:${row.id}:${row.last4}`}>
-                <Text color="cyan">{row.last4}</Text>
-                <Text> | </Text>
-                <Text>{row.cardName}</Text>
-                <Text> | </Text>
-                <Text color={offerStatusColor(row.status)}>{row.status}</Text>
-                {row.expiresAt ? (
-                  <>
-                    <Text> | </Text>
-                    <Text color="yellow">{row.expiresAt}</Text>
-                  </>
-                ) : null}
-              </Text>
-            ))}
-          </Box>
         </Box>
       </Box>
     </Box>
@@ -733,6 +1176,17 @@ function statusColor(status: BenefitsInkRow["displayStatus"]): "green" | "blue" 
   return "yellow";
 }
 
+function offerActivityColor(tone: OfferActivityItem["tone"]): "gray" | "green" | "red" {
+  switch (tone) {
+    case "info":
+      return "gray";
+    case "success":
+      return "green";
+    case "error":
+      return "red";
+  }
+}
+
 function formatMemberListLabel(card: AppCardsItem): string {
   if (card.relationship === "SUPP") {
     return `  -> ${card.last4} ${card.member}`;
@@ -745,7 +1199,7 @@ function groupOffers(offers: AppOfferItem[]): AppOfferGroup[] {
   const groups = new Map<string, AppOfferGroup>();
 
   for (const offer of offers) {
-    const key = offer.title;
+    const key = offer.id;
     const existing = groups.get(key);
     if (existing) {
       existing.rows.push(offer);
@@ -753,6 +1207,7 @@ function groupOffers(offers: AppOfferItem[]): AppOfferGroup[] {
     }
 
     groups.set(key, {
+      id: offer.id,
       title: offer.title,
       description: offer.description,
       rows: [offer],
@@ -766,6 +1221,10 @@ function groupOffers(offers: AppOfferItem[]): AppOfferGroup[] {
 
     return left.title.localeCompare(right.title);
   });
+}
+
+function offerRowKey(row: AppOfferItem): string {
+  return `${row.id}:${row.cardId}:${row.last4}`;
 }
 
 function summarizeOfferStatusCounts(offers: AppOfferItem[]): OfferStatusCounts {

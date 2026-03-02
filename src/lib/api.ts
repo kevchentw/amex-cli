@@ -5,17 +5,22 @@ import type {
   Benefit,
   CachedDataset,
   CardSummary,
+  OfferEnrollmentResult,
+  OfferEnrollmentTarget,
   Offer,
 } from "./types.js";
 
 const MEMBER_URL = "https://global.americanexpress.com/api/servicing/v1/member";
 const BENEFITS_URL = "https://functions.americanexpress.com/ReadBestLoyaltyBenefitsTrackers.v1";
 const OFFERS_URL = "https://functions.americanexpress.com/ReadCardAccountOffersList.v1";
+const OFFER_ENROLL_URL = "https://functions.americanexpress.com/CreateOffersHubEnrollment.web.v1";
 
 export interface AmexApiClient {
   syncCards(session: AuthSession): Promise<CachedDataset<CardSummary>>;
   syncBenefits(session: AuthSession): Promise<CachedDataset<Benefit>>;
   syncOffers(session: AuthSession): Promise<CachedDataset<Offer>>;
+  enrollOffer(session: AuthSession, target: OfferEnrollmentTarget): Promise<OfferEnrollmentResult>;
+  enrollOffers(session: AuthSession, targets: OfferEnrollmentTarget[]): Promise<OfferEnrollmentResult[]>;
 }
 
 export class HttpAmexApiClient implements AmexApiClient {
@@ -141,6 +146,90 @@ export class HttpAmexApiClient implements AmexApiClient {
     };
   }
 
+  async enrollOffer(session: AuthSession, target: OfferEnrollmentTarget): Promise<OfferEnrollmentResult> {
+    const requestContext = await createRequestContext(
+      session,
+      this.buildHeaders({ referer: "https://global.americanexpress.com/offers" }),
+    );
+    try {
+      return await this.enrollOfferWithApi(session, requestContext.api, target);
+    } finally {
+      await requestContext.dispose();
+    }
+  }
+
+  async enrollOffers(session: AuthSession, targets: OfferEnrollmentTarget[]): Promise<OfferEnrollmentResult[]> {
+    const requestContext = await createRequestContext(
+      session,
+      this.buildHeaders({ referer: "https://global.americanexpress.com/offers" }),
+    );
+
+    try {
+      debugApi(session, `dispatching ${targets.length} offer enrollment request(s) concurrently`);
+      const requests = targets.map((target) => this.enrollOfferWithApi(session, requestContext.api, target));
+      return await Promise.all(requests);
+    } finally {
+      await requestContext.dispose();
+    }
+  }
+
+  private async enrollOfferWithApi(
+    session: AuthSession,
+    api: import("patchright").APIRequestContext,
+    target: OfferEnrollmentTarget,
+  ): Promise<OfferEnrollmentResult> {
+    const requestBody = {
+      accountNumberProxy: target.accountNumberProxy,
+      enrollmentTrigger: "OFFERSHUB_TILE",
+      locale: target.locale ?? "en-US",
+      offerId: target.offerId,
+      offerUnencrypted: false,
+      requestType: "OFFERSHUB_ENROLLMENT",
+      synchronizeOnly: false,
+    };
+    const debugLabel = `offer-enroll:${target.offerId}:${target.accountNumberProxy}`;
+
+    try {
+      debugApi(
+        session,
+        `POST ${OFFER_ENROLL_URL} (${debugLabel}) request=${truncateForError(JSON.stringify(requestBody))}`,
+      );
+      const response = await api.post(OFFER_ENROLL_URL, {
+        data: requestBody,
+      });
+      const payload = await parseJsonResponse<OfferEnrollmentResponse>(
+        response,
+        OFFER_ENROLL_URL,
+        debugLabel,
+        requestBody,
+        session,
+      );
+
+      return {
+        offerId: target.offerId,
+        accountNumberProxy: target.accountNumberProxy,
+        ...(target.last4 ? { last4: target.last4 } : {}),
+        ...(target.cardName ? { cardName: target.cardName } : {}),
+        statusPurpose: payload.status?.purpose ?? "UNKNOWN",
+        statusMessage: summarizeOfferEnrollmentMessage(payload),
+        raw: payload,
+      };
+    } catch (error) {
+      return {
+        offerId: target.offerId,
+        accountNumberProxy: target.accountNumberProxy,
+        ...(target.last4 ? { last4: target.last4 } : {}),
+        ...(target.cardName ? { cardName: target.cardName } : {}),
+        statusPurpose: "FAILURE",
+        statusMessage: error instanceof Error ? error.message : String(error),
+        raw: {
+          request: requestBody,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      };
+    }
+  }
+
   private async fetchMember(session: AuthSession): Promise<MemberResponse> {
     try {
       return await this.getJson<MemberResponse>(session, MEMBER_URL, {
@@ -163,8 +252,9 @@ export class HttpAmexApiClient implements AmexApiClient {
   ): Promise<T> {
     const requestContext = await createRequestContext(session, this.buildHeaders(options));
     try {
+      debugApi(session, `GET ${url}${options.debugLabel ? ` (${options.debugLabel})` : ""}`);
       const response = await requestContext.api.get(url);
-      return parseJsonResponse<T>(response, url, options.debugLabel);
+      return parseJsonResponse<T>(response, url, options.debugLabel, undefined, session);
     } finally {
       await requestContext.dispose();
     }
@@ -178,10 +268,14 @@ export class HttpAmexApiClient implements AmexApiClient {
   ): Promise<T> {
     const requestContext = await createRequestContext(session, this.buildHeaders(options));
     try {
+      debugApi(
+        session,
+        `POST ${url}${options.debugLabel ? ` (${options.debugLabel})` : ""} request=${truncateForError(JSON.stringify(body))}`,
+      );
       const response = await requestContext.api.post(url, {
         data: body,
       });
-      return parseJsonResponse<T>(response, url, options.debugLabel, body);
+      return parseJsonResponse<T>(response, url, options.debugLabel, body, session);
     } finally {
       await requestContext.dispose();
     }
@@ -269,6 +363,23 @@ interface BenefitTracker {
 
 interface OffersResponse {
   offers?: RawOffer[];
+}
+
+interface OfferEnrollmentResponse {
+  accountNumberProxy?: string;
+  status?: {
+    purpose?: string;
+    message?: string;
+  };
+  responseType?: string;
+  addedToCard?: {
+    title?: string;
+  };
+  recommendedOffers?: {
+    userNotification?: {
+      title?: string;
+    };
+  };
 }
 
 interface RawOffer {
@@ -363,6 +474,7 @@ function normalizeOffer(offer: RawOffer, account: MemberAccount): Offer {
       terms: offer.terms,
       ctaUrl: offer.cta?.url,
       longDescription: offer.long_description,
+      locale: account.profile?.locale_preference,
     },
   };
 }
@@ -378,9 +490,14 @@ async function parseJsonResponse<T>(
   url: string,
   debugLabel?: string,
   requestBody?: unknown,
+  session?: AuthSession,
 ): Promise<T> {
   if (!response.ok()) {
     const responseText = await response.text().catch(() => "");
+    debugApi(
+      session,
+      `response ${response.status()} ${response.statusText()} ${url}${debugLabel ? ` (${debugLabel})` : ""}${responseText ? ` body=${truncateForError(responseText)}` : ""}`,
+    );
     if (url === OFFERS_URL && response.status() === 400 && responseText.includes("INELIGIBLE")) {
       return { offers: [] } as T;
     }
@@ -393,15 +510,50 @@ async function parseJsonResponse<T>(
     );
   }
 
+  if (url === OFFER_ENROLL_URL) {
+    const payload = (await response.json().catch(() => ({}))) as OfferEnrollmentResponse;
+    debugApi(
+      session,
+      `response ${response.status()} ${response.statusText()} ${url}${debugLabel ? ` (${debugLabel})` : ""} body=${truncateForError(JSON.stringify(payload))}`,
+    );
+    return payload as T;
+  }
+
   try {
-    return (await response.json()) as T;
+    const payload = (await response.json()) as T;
+    debugApi(
+      session,
+      `response ${response.status()} ${response.statusText()} ${url}${debugLabel ? ` (${debugLabel})` : ""}`,
+    );
+    return payload;
   } catch (error) {
     throw new CliError(`Amex API response was not valid JSON for ${url}. ${String(error)}`);
   }
 }
 
+function debugApi(session: AuthSession | undefined, message: string): void {
+  if (!session?.metadata || session.metadata.debug !== true) {
+    return;
+  }
+
+  process.stderr.write(`[api-debug] ${message}\n`);
+}
+
 function truncateForError(value: string, maxLength = 500): string {
   return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value;
+}
+
+function summarizeOfferEnrollmentMessage(payload: OfferEnrollmentResponse): string {
+  const statusMessage = payload.status?.message?.trim();
+  const notificationTitle =
+    payload.recommendedOffers?.userNotification?.title?.trim() ??
+    payload.addedToCard?.title?.trim();
+
+  if (statusMessage && notificationTitle && !statusMessage.includes(notificationTitle)) {
+    return `${statusMessage} (${notificationTitle})`;
+  }
+
+  return statusMessage || notificationTitle || "Unknown response from Amex offer enrollment API.";
 }
 
 function isIneligibleOffersError(error: unknown): boolean {

@@ -3,6 +3,8 @@ import {
   handleAuthClear,
   handleAuthSet,
   handleAuthStatus,
+  handleEnrollAllOffers,
+  handleEnrollOffer,
   handleInteractive,
   handleShow,
   handleSync,
@@ -16,6 +18,10 @@ Commands:
   sync [--json] [--debug] [--force-login]     Sync all data from Amex and cache it locally
   show [cards|benefits|offers|all] [--json] [--all|-a]
                                                Read cached data
+  enroll offer (--offer-id <id> | --source-id <id>) [--card <last4> ... | --all-cards] [--json] [--debug]
+                                               Enroll an Amex offer on one or more cards
+  enroll all-offers [--card <last4> ...] [--json] [--debug]
+                                               Enroll all eligible cached offers
   auth set                                     Store credentials securely
   auth status [--json]                         Show credential status
   auth clear                                   Delete stored credentials
@@ -29,6 +35,9 @@ Options:
   --password <value>  Password for auth set
   --status <value>    Filter show offers by enrolled, eligible, or other
   --card <last4>      Filter show offers by card ending
+  --offer-id <value>  Offer id for enroll offer
+  --source-id <value> Stable source id for enroll offer
+  --all-cards         Enroll the offer on every eligible cached card
   --force-login       Skip cached session and force a fresh browser login
 `;
 
@@ -60,6 +69,9 @@ async function dispatch(argv: string[]): Promise<void> {
       return;
     case "show":
       await handleShow(parseTarget(arg1), options);
+      return;
+    case "enroll":
+      await handleEnroll(arg1, options);
       return;
     case "interactive":
       await handleInteractive();
@@ -93,6 +105,19 @@ async function handleAuth(subcommand: string | undefined, options: CliOptions): 
   }
 }
 
+async function handleEnroll(subcommand: string | undefined, options: CliOptions): Promise<void> {
+  switch (subcommand) {
+    case "offer":
+      await handleEnrollOffer(options);
+      return;
+    case "all-offers":
+      await handleEnrollAllOffers(options);
+      return;
+    default:
+      throw new CliError(`Unknown enroll command: ${subcommand ?? "(missing)"}\n\n${HELP_TEXT}`);
+  }
+}
+
 function parseTarget(raw: string | undefined): DataKind | "all" {
   switch (raw) {
     case undefined:
@@ -123,6 +148,10 @@ function parseOptions(args: Array<string | undefined>): CliOptions {
     forceLogin: args.includes("--force-login"),
     offerStatus: offerStatus as CliOptions["offerStatus"],
     offerCard: readRawOptionValue(args, "--card"),
+    offerCards: readRawOptionValues(args, "--card"),
+    offerId: readRawOptionValue(args, "--offer-id"),
+    offerSourceId: readRawOptionValue(args, "--source-id"),
+    enrollAllCards: args.includes("--all-cards"),
     authUsername: readRawOptionValue(args, "--username"),
     authPassword: readRawOptionValue(args, "--password"),
   };
@@ -149,4 +178,22 @@ function readRawOptionValue(args: Array<string | undefined>, option: string): st
   }
 
   return value;
+}
+
+function readRawOptionValues(args: Array<string | undefined>, option: string): string[] {
+  const values: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] !== option) {
+      continue;
+    }
+
+    const value = args[index + 1];
+    if (!value || isOption(value)) {
+      throw new CliError(`Expected a value after ${option}.`);
+    }
+
+    values.push(value);
+  }
+
+  return values;
 }

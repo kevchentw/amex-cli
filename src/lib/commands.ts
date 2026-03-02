@@ -9,7 +9,17 @@ import { CacheStore } from "./cache.js";
 import { KeytarCredentialStore } from "./credentials.js";
 import { CliError } from "./errors.js";
 import { colorize, printJson, printText } from "./output.js";
-import type { AuthSession, Benefit, CardSummary, CliOptions, Credentials, DataKind, Offer } from "./types.js";
+import type {
+  AuthSession,
+  Benefit,
+  CardSummary,
+  CliOptions,
+  Credentials,
+  DataKind,
+  Offer,
+  OfferEnrollmentResult,
+  OfferEnrollmentTarget,
+} from "./types.js";
 
 const cacheStore = new CacheStore();
 const credentialStore = new KeytarCredentialStore();
@@ -23,6 +33,10 @@ const DEFAULT_CLI_OPTIONS: CliOptions = {
   forceLogin: false,
   offerStatus: undefined,
   offerCard: undefined,
+  offerCards: [],
+  offerId: undefined,
+  offerSourceId: undefined,
+  enrollAllCards: false,
   authUsername: undefined,
   authPassword: undefined,
 };
@@ -33,6 +47,42 @@ export async function handleSync(options: CliOptions): Promise<void> {
   try {
     const results = await runSyncWithSession(session);
     renderSyncResults(results, options);
+  } finally {
+    await disposeRuntimeSession(session);
+  }
+}
+
+export async function handleEnrollOffer(options: CliOptions): Promise<void> {
+  if (!options.offerId && !options.offerSourceId) {
+    throw new CliError("Expected --offer-id or --source-id for `amex enroll offer`.");
+  }
+
+  const offers = await requireCachedOffers();
+  const targets = resolveOfferEnrollmentTargets(offers, options);
+  const credentials = await requireCredentials();
+  const session = await getSessionForSync(credentials, { ...options, forceLogin: true }, { forceLogin: true });
+
+  try {
+    const results = await apiClient.enrollOffers(session, targets);
+    const offersDataset = await apiClient.syncOffers(session);
+    await cacheStore.write("offers", offersDataset);
+    renderOfferEnrollmentResults(results, options);
+  } finally {
+    await disposeRuntimeSession(session);
+  }
+}
+
+export async function handleEnrollAllOffers(options: CliOptions): Promise<void> {
+  const offers = await requireCachedOffers();
+  const targets = resolveAllOfferEnrollmentTargets(offers, options);
+  const credentials = await requireCredentials();
+  const session = await getSessionForSync(credentials, { ...options, forceLogin: true }, { forceLogin: true });
+
+  try {
+    const results = await apiClient.enrollOffers(session, targets);
+    const offersDataset = await apiClient.syncOffers(session);
+    await cacheStore.write("offers", offersDataset);
+    renderBulkOfferEnrollmentResults(results, options);
   } finally {
     await disposeRuntimeSession(session);
   }
@@ -179,13 +229,95 @@ export async function handleInteractive(): Promise<void> {
   }));
   const offers = (bundle.offers.items as Offer[]).map((offer) => ({
     id: offer.id,
+    cardId: offer.cardId,
     title: offer.title,
     last4: asString(offer.metadata?.last4) ?? "N/A",
     cardName: asString(offer.metadata?.cardName) ?? "Unknown Card",
     status: asString(offer.metadata?.status) ?? "Unknown",
     expiresAt: offer.expiresAt,
     description: offer.description,
+    locale: asString(offer.metadata?.locale) ?? "en-US",
   }));
+  let cachedOffers = bundle.offers.items as Offer[];
+  let interactiveSession: AuthSession | undefined;
+
+  const mapOffersForInteractive = (offersDataset: Offer[]) =>
+    offersDataset.map((offer) => ({
+      id: offer.id,
+      cardId: offer.cardId,
+      title: offer.title,
+      last4: asString(offer.metadata?.last4) ?? "N/A",
+      cardName: asString(offer.metadata?.cardName) ?? "Unknown Card",
+      status: asString(offer.metadata?.status) ?? "Unknown",
+      expiresAt: offer.expiresAt,
+      description: offer.description,
+      locale: asString(offer.metadata?.locale) ?? "en-US",
+    }));
+
+  const getInteractiveEnrollSession = async (
+    onProgress?: (progress: {
+      sessionMessage?: string;
+      actionMessage?: string;
+      activity?: { tone: "info" | "success" | "error"; text: string };
+    }) => void,
+  ) => {
+    const credentials = await requireCredentials();
+    onProgress?.({
+      sessionMessage: "Session: checking existing browser session...",
+      activity: { tone: "info", text: "Checking existing browser session." },
+    });
+
+    if (interactiveSession) {
+      try {
+        onProgress?.({
+          actionMessage: "Validating active interactive session...",
+        });
+        await apiClient.syncCards(interactiveSession);
+        interactiveSession.metadata = {
+          ...(interactiveSession.metadata ?? {}),
+          sessionStatus: "reused-live",
+        };
+        onProgress?.({
+          sessionMessage: "Session: reused active interactive session.",
+          activity: { tone: "success", text: "Reused active interactive session." },
+        });
+        return interactiveSession;
+      } catch (error) {
+        await disposeRuntimeSession(interactiveSession);
+        interactiveSession = undefined;
+        if (!isReusableSessionError(error)) {
+          throw error;
+        }
+        onProgress?.({
+          sessionMessage: "Session: active session expired, falling back to saved profile.",
+          activity: { tone: "info", text: "Active session was invalid. Checking saved browser profile." },
+        });
+      }
+    }
+
+    onProgress?.({
+      actionMessage: "Validating saved browser session...",
+    });
+    interactiveSession = await getSessionForSync(credentials, DEFAULT_CLI_OPTIONS, { silent: true });
+    const sessionStatus = asString(interactiveSession.metadata?.sessionStatus);
+    if (sessionStatus === "reused") {
+      onProgress?.({
+        sessionMessage: "Session: reused saved browser session.",
+        activity: { tone: "success", text: "Reused saved browser session." },
+      });
+    } else if (sessionStatus === "fallback-fresh") {
+      onProgress?.({
+        sessionMessage: "Session: saved session invalid, used fresh login.",
+        activity: { tone: "info", text: "Saved session was invalid. Used a fresh browser login." },
+      });
+    } else if (sessionStatus === "fresh") {
+      onProgress?.({
+        sessionMessage: "Session: used fresh browser login.",
+        activity: { tone: "info", text: "Used a fresh browser login." },
+      });
+    }
+    return interactiveSession;
+  };
 
   await runInteractiveAppView({
     syncedAt: {
@@ -199,7 +331,46 @@ export async function handleInteractive(): Promise<void> {
       summary: summarizeBenefits(benefitRows),
     },
     offers,
+    onEnrollOffer: async (selection, onProgress) => {
+      const session = await getInteractiveEnrollSession(onProgress);
+      const results = await apiClient.enrollOffers(session, selection);
+      const offersDataset = await apiClient.syncOffers(session);
+      await cacheStore.write("offers", offersDataset);
+      cachedOffers = offersDataset.items as Offer[];
+
+      return {
+        results,
+        offers: mapOffersForInteractive(offersDataset.items as Offer[]),
+        syncedAt: offersDataset.syncedAt,
+        ...(asString(session.metadata?.sessionStatus)
+          ? { sessionStatus: asString(session.metadata?.sessionStatus) }
+          : {}),
+      };
+    },
+    onEnrollAllOffers: async (onProgress) => {
+      const session = await getInteractiveEnrollSession(onProgress);
+      const results = await apiClient.enrollOffers(
+        session,
+        resolveAllOfferEnrollmentTargets(cachedOffers, DEFAULT_CLI_OPTIONS),
+      );
+      const offersDataset = await apiClient.syncOffers(session);
+      await cacheStore.write("offers", offersDataset);
+      cachedOffers = offersDataset.items as Offer[];
+
+      return {
+        results,
+        offers: mapOffersForInteractive(offersDataset.items as Offer[]),
+        syncedAt: offersDataset.syncedAt,
+        ...(asString(session.metadata?.sessionStatus)
+          ? { sessionStatus: asString(session.metadata?.sessionStatus) }
+          : {}),
+      };
+    },
   });
+
+  if (interactiveSession) {
+    await disposeRuntimeSession(interactiveSession);
+  }
 }
 
 export async function handleAuthSet(options: CliOptions): Promise<void> {
@@ -272,6 +443,69 @@ function renderSyncResults(
   ]);
 }
 
+function renderOfferEnrollmentResults(results: OfferEnrollmentResult[], options: CliOptions): void {
+  const succeeded = results.filter((result) => result.statusPurpose.toUpperCase() === "SUCCESS");
+  const failed = results.filter((result) => result.statusPurpose.toUpperCase() !== "SUCCESS");
+  const payload = {
+    enrolledCount: succeeded.length,
+    failedCount: failed.length,
+    results: results.map((result) => ({
+      offerId: result.offerId,
+      accountNumberProxy: result.accountNumberProxy,
+      last4: result.last4,
+      cardName: result.cardName,
+      statusPurpose: result.statusPurpose,
+      statusMessage: result.statusMessage,
+    })),
+  };
+
+  if (options.json) {
+    printJson(payload);
+    return;
+  }
+
+  printText([
+    `Offer ${results[0]?.offerId ?? ""}: ${succeeded.length} succeeded, ${failed.length} failed.`,
+    ...results.map(
+      (result) =>
+        `${result.statusPurpose.toUpperCase() === "SUCCESS" ? "SUCCESS" : "FAILED "} | ${result.last4 ?? result.accountNumberProxy} | ${result.cardName ?? "Unknown Card"} | ${result.statusMessage}`,
+    ),
+    "Offers cache refreshed.",
+  ]);
+}
+
+function renderBulkOfferEnrollmentResults(results: OfferEnrollmentResult[], options: CliOptions): void {
+  const succeeded = results.filter((result) => result.statusPurpose.toUpperCase() === "SUCCESS");
+  const failed = results.filter((result) => result.statusPurpose.toUpperCase() !== "SUCCESS");
+  const payload = {
+    enrolledCount: succeeded.length,
+    failedCount: failed.length,
+    uniqueOffers: new Set(results.map((result) => result.offerId)).size,
+    results: results.map((result) => ({
+      offerId: result.offerId,
+      accountNumberProxy: result.accountNumberProxy,
+      last4: result.last4,
+      cardName: result.cardName,
+      statusPurpose: result.statusPurpose,
+      statusMessage: result.statusMessage,
+    })),
+  };
+
+  if (options.json) {
+    printJson(payload);
+    return;
+  }
+
+  printText([
+    `Processed ${payload.uniqueOffers} offer(s): ${succeeded.length} succeeded, ${failed.length} failed.`,
+    ...results.map(
+      (result) =>
+        `${result.statusPurpose.toUpperCase() === "SUCCESS" ? "SUCCESS" : "FAILED "} | ${result.offerId} | ${result.last4 ?? result.accountNumberProxy} | ${result.cardName ?? "Unknown Card"} | ${result.statusMessage}`,
+    ),
+    "Offers cache refreshed.",
+  ]);
+}
+
 async function readCacheEntries(kinds: DataKind[]) {
   return Promise.all(kinds.map(async (kind) => [kind, await cacheStore.read(kind)] as const));
 }
@@ -296,6 +530,15 @@ async function promptToSyncMissingCache(missing: DataKind[], options: Pick<CliOp
   }
 }
 
+async function requireCachedOffers(): Promise<Offer[]> {
+  const dataset = await cacheStore.read("offers");
+  if (!dataset) {
+    throw new CliError("No cached data for offers. Run sync first.");
+  }
+
+  return dataset.items as Offer[];
+}
+
 async function requireCredentials(): Promise<Credentials> {
   const credentials = await credentialStore.get();
   if (!credentials) {
@@ -308,20 +551,155 @@ async function requireCredentials(): Promise<Credentials> {
 async function getSessionForSync(
   credentials: Credentials,
   options: CliOptions,
-  config: { forceLogin?: boolean } = {},
+  config: { forceLogin?: boolean; silent?: boolean } = {},
 ): Promise<AuthSession> {
-  return forceLoginSession(credentials, options);
+  if (!config.forceLogin) {
+    let restored: AuthSession | undefined;
+    try {
+      restored = await restoreProfileSession(options, config);
+      await apiClient.syncCards(restored);
+      restored.metadata = {
+        ...(restored.metadata ?? {}),
+        sessionStatus: "reused",
+      };
+      return restored;
+    } catch (error) {
+      if (restored) {
+        await disposeRuntimeSession(restored);
+      }
+      if (!isReusableSessionError(error)) {
+        throw error;
+      }
+    }
+  }
+
+  const fresh = await forceLoginSession(credentials, options, config);
+  fresh.metadata = {
+    ...(fresh.metadata ?? {}),
+    sessionStatus: config.forceLogin ? "fresh" : "fallback-fresh",
+  };
+  return fresh;
 }
 
-async function forceLoginSession(credentials: Credentials, options: CliOptions): Promise<AuthSession> {
-  const reporter = createAuthInkReporter(!options.json && !options.debug);
+async function restoreProfileSession(
+  options: CliOptions,
+  config: { forceLogin?: boolean; silent?: boolean } = {},
+): Promise<AuthSession> {
+  if (!(authenticator instanceof PatchrightAmexAuthenticator)) {
+    throw new CliError("Authenticator does not support restoring an existing browser profile session.");
+  }
+
+  const silent = config.silent ?? false;
+  const reporter = createAuthInkReporter(!silent && !options.json && !options.debug);
+  try {
+    return await authenticator.restore(
+      reporter ? { debug: options.debug, reporter, quiet: silent } : { debug: options.debug, quiet: silent },
+    );
+  } finally {
+    reporter?.dispose();
+  }
+}
+
+function resolveOfferEnrollmentTargets(offers: Offer[], options: CliOptions): OfferEnrollmentTarget[] {
+  const matchingOffers = offers.filter((offer) =>
+    options.offerId
+      ? offer.id === options.offerId
+      : asString(offer.metadata?.sourceId) === options.offerSourceId,
+  );
+  const requestedLabel = options.offerId
+    ? `id ${options.offerId}`
+    : `source id ${options.offerSourceId}`;
+  if (matchingOffers.length === 0) {
+    throw new CliError(`No cached offer matched ${requestedLabel}. Run sync first or check the offer id.`);
+  }
+
+  const candidateOffers = matchingOffers.filter((offer) => normalizeOfferEnrollmentStatus(offer) !== "ENROLLED");
+  if (candidateOffers.length === 0) {
+    throw new CliError(`Offer ${requestedLabel} is already enrolled on every cached card.`);
+  }
+
+  if (options.enrollAllCards) {
+    return candidateOffers.map(toOfferEnrollmentTarget);
+  }
+
+  if (options.offerCards.length > 0) {
+    const requested = new Set(options.offerCards);
+    const selected = candidateOffers.filter((offer) => requested.has(asString(offer.metadata?.last4) ?? ""));
+    const missingCards = options.offerCards.filter(
+      (last4) => !selected.some((offer) => (asString(offer.metadata?.last4) ?? "") === last4),
+    );
+    if (missingCards.length > 0) {
+      throw new CliError(
+        `Offer ${requestedLabel} is not eligible on card(s): ${missingCards.join(", ")}.`,
+      );
+    }
+
+    return selected.map(toOfferEnrollmentTarget);
+  }
+
+  if (candidateOffers.length === 1) {
+    return candidateOffers.map(toOfferEnrollmentTarget);
+  }
+
+  throw new CliError(
+    `Offer ${requestedLabel} is available on ${candidateOffers.length} cards. Pass --card <last4> one or more times, or use --all-cards.`,
+  );
+}
+
+function resolveAllOfferEnrollmentTargets(offers: Offer[], options: CliOptions): OfferEnrollmentTarget[] {
+  const candidateOffers = offers.filter((offer) => normalizeOfferEnrollmentStatus(offer) === "ELIGIBLE");
+
+  if (candidateOffers.length === 0) {
+    throw new CliError("No eligible cached offers were found.");
+  }
+
+  if (options.offerCards.length === 0) {
+    return candidateOffers.map(toOfferEnrollmentTarget);
+  }
+
+  const requested = new Set(options.offerCards);
+  const selected = candidateOffers.filter((offer) => requested.has(asString(offer.metadata?.last4) ?? ""));
+  const missingCards = options.offerCards.filter(
+    (last4) => !selected.some((offer) => (asString(offer.metadata?.last4) ?? "") === last4),
+  );
+
+  if (missingCards.length > 0) {
+    throw new CliError(`No eligible cached offers were found for card(s): ${missingCards.join(", ")}.`);
+  }
+
+  return selected.map(toOfferEnrollmentTarget);
+}
+
+function toOfferEnrollmentTarget(offer: Offer): OfferEnrollmentTarget {
+  const last4 = asString(offer.metadata?.last4) ?? undefined;
+  const cardName = asString(offer.metadata?.cardName) ?? undefined;
+  return {
+    offerId: offer.id,
+    accountNumberProxy: offer.cardId,
+    locale: asString(offer.metadata?.locale) ?? "en-US",
+    ...(last4 ? { last4 } : {}),
+    ...(cardName ? { cardName } : {}),
+  };
+}
+
+function normalizeOfferEnrollmentStatus(offer: Offer): string {
+  return asString(offer.metadata?.status)?.toUpperCase() ?? "UNKNOWN";
+}
+
+async function forceLoginSession(
+  credentials: Credentials,
+  options: CliOptions,
+  config: { forceLogin?: boolean; silent?: boolean } = {},
+): Promise<AuthSession> {
+  const silent = config.silent ?? false;
+  const reporter = createAuthInkReporter(!silent && !options.json && !options.debug);
   try {
     const session = await authenticator.login(
       credentials,
-      reporter ? { debug: options.debug, reporter } : { debug: options.debug },
+      reporter ? { debug: options.debug, reporter, quiet: silent } : { debug: options.debug, quiet: silent },
     );
     reporter?.update("Validating fresh session");
-    logSyncStep(options, "Validating fresh Amex session.");
+    logSyncStep(options, "Validating fresh Amex session.", silent);
     try {
       await apiClient.syncCards(session);
     } catch (error) {
@@ -336,7 +714,7 @@ async function forceLoginSession(credentials: Credentials, options: CliOptions):
       throw error;
     }
     reporter?.success("Fresh session validated");
-    logSyncStep(options, "Fresh Amex session validated.");
+    logSyncStep(options, "Fresh Amex session validated.", silent);
     return session;
   } catch (error) {
     reporter?.fail("Login failed", error instanceof Error ? error.message : String(error));
@@ -346,8 +724,8 @@ async function forceLoginSession(credentials: Credentials, options: CliOptions):
   }
 }
 
-function logSyncStep(options: CliOptions, message: string): void {
-  if (options.json) {
+function logSyncStep(options: CliOptions, message: string, silent = false): void {
+  if (options.json || silent) {
     return;
   }
 
@@ -407,7 +785,8 @@ function isReusableSessionError(error: unknown): boolean {
     message.includes("invalid_authentication_token") ||
     message.includes("must provide user jwt") ||
     message.includes("no browser storage state") ||
-    message.includes("not authenticated")
+    message.includes("not authenticated") ||
+    message.includes("saved browser profile is not currently authenticated")
   );
 }
 
@@ -700,7 +1079,12 @@ function formatOfferGroups(groups: OfferGroup[]): string[] {
   const lines: string[] = [];
 
   for (const group of groups) {
+    const sourceId = asString(group.rows[0]?.sourceId);
     lines.push(colorize(group.title, "\u001b[1m"));
+    lines.push(`  ${colorize("Offer ID:", "\u001b[2m")} ${group.id}`);
+    if (sourceId) {
+      lines.push(`  ${colorize("Source ID:", "\u001b[2m")} ${sourceId}`);
+    }
     lines.push(`  ${colorize("Summary:", "\u001b[2m")} ${summarizeOfferGroupStatuses(group.rows)}`);
     if (group.description) {
       lines.push(`  ${colorize("Description:", "\u001b[2m")} ${group.description}`);
@@ -1081,13 +1465,14 @@ function groupOfferRows(offers: Offer[]): OfferGroup[] {
 
   for (const offer of offers) {
     const row = buildOfferTableRow(offer);
-    const existing = groups.get(row.title);
+    const existing = groups.get(row.id);
     if (existing) {
       existing.rows.push(row);
       continue;
     }
 
-    groups.set(row.title, {
+    groups.set(row.id, {
+      id: row.id,
       title: row.title,
       description: row.description,
       rows: [row],
@@ -1099,13 +1484,23 @@ function groupOfferRows(offers: Offer[]): OfferGroup[] {
       ...group,
       rows: group.rows.sort((left, right) => left.last4.localeCompare(right.last4)),
     }))
-    .sort((left, right) => left.title.localeCompare(right.title));
+    .sort((left, right) => {
+      const leftExpiry = earliestOfferExpiry(groupExpiryCandidates(left.rows));
+      const rightExpiry = earliestOfferExpiry(groupExpiryCandidates(right.rows));
+      if (leftExpiry !== rightExpiry) {
+        return leftExpiry - rightExpiry;
+      }
+
+      return left.title.localeCompare(right.title);
+    });
 }
 
 function buildOfferTableRow(offer: Offer): OfferTableRow {
   const metadata = offer.metadata ?? {};
 
   return {
+    id: offer.id,
+    sourceId: asString(metadata.sourceId) ?? "",
     title: offer.title,
     last4: asString(metadata.last4) ?? "N/A",
     cardName: asString(metadata.cardName) ?? "Unknown Card",
@@ -1113,6 +1508,35 @@ function buildOfferTableRow(offer: Offer): OfferTableRow {
     expiresAt: formatShortDate(offer.expiresAt) ?? "N/A",
     description: offer.description ?? "",
   };
+}
+
+function groupExpiryCandidates(rows: OfferTableRow[]): string[] {
+  return rows.map((row) => row.expiresAt);
+}
+
+function earliestOfferExpiry(values: string[]): number {
+  const timestamps = values
+    .map(parseShortDateToTimestamp)
+    .filter((value): value is number => Number.isFinite(value));
+
+  return timestamps.length > 0 ? Math.min(...timestamps) : Number.POSITIVE_INFINITY;
+}
+
+function parseShortDateToTimestamp(value: string): number | undefined {
+  if (!value || value === "N/A") {
+    return undefined;
+  }
+
+  const match = value.match(/^(\d{2})-(\d{2})-(\d{2})$/);
+  if (!match) {
+    return undefined;
+  }
+
+  const month = Number(match[1]);
+  const day = Number(match[2]);
+  const year = Number(`20${match[3]}`);
+  const timestamp = Date.UTC(year, month - 1, day);
+  return Number.isFinite(timestamp) ? timestamp : undefined;
 }
 
 function summarizeOfferGroupStatuses(rows: OfferTableRow[]): string {
@@ -1268,6 +1692,8 @@ interface BenefitGroup {
 }
 
 interface OfferTableRow {
+  id: string;
+  sourceId: string;
   title: string;
   last4: string;
   cardName: string;
@@ -1277,6 +1703,7 @@ interface OfferTableRow {
 }
 
 interface OfferGroup {
+  id: string;
   title: string;
   description: string;
   rows: OfferTableRow[];

@@ -17,12 +17,12 @@ Typical use cases:
 
 - ask an AI assistant to summarize active benefits you have not used
 - filter all offers for a specific card and pass them into another tool
+- add an offer to one card or all eligible cards from the terminal
 - keep a local cache of cards, benefits, and offers for later analysis
 - browse everything in a terminal UI without digging through multiple Amex pages
 
 Coming soon:
 
-- add support for enrolling Amex offers directly from the CLI
 - calculate welcome offer progress and spending milestones
 - store transaction history locally for richer analysis and tracking
 
@@ -112,6 +112,9 @@ npx amex-cli show cards
 npx amex-cli show benefits
 npx amex-cli show offers
 npx amex-cli show all
+npx amex-cli enroll offer --source-id SOURCE_ID --card 41008
+npx amex-cli enroll offer --source-id SOURCE_ID --all-cards
+npx amex-cli enroll all-offers
 npx amex-cli auth set
 npx amex-cli auth set --username YOUR_USERNAME --password YOUR_PASSWORD
 npx amex-cli auth status
@@ -123,6 +126,10 @@ Notes:
 - running `npx amex-cli` with no command opens the interactive UI
 - `sync` opens a visible Chrome window for login and refreshes local cache
 - `sync --debug` keeps the browser visible and prints extra auth/network logs
+- `enroll offer` can add one offer to one card, multiple cards, or all eligible cards for that offer
+- `enroll all-offers` attempts to add every eligible offer currently in local cache
+- `--source-id` is usually easier than `--offer-id` because Amex offer ids often contain shell-hostile characters
+- multi-card offer enrollment is still not guaranteed to add the offer to every eligible card; a more reliable approach is still being investigated
 
 ## Interactive UI
 
@@ -133,6 +140,17 @@ The interactive UI includes:
 - `Offers` tab
 
 It supports keyboard navigation, filtering, and search directly in the terminal.
+
+The `Offers` tab can also enroll offers:
+
+- add the focused offer to selected cards
+- add the focused offer to all eligible cards
+- add all eligible offers in the current cache
+- reuse an existing interactive browser session when possible before falling back to a fresh login
+
+Current limitation:
+
+- multi-card enrollment can still partially fail even when several cards are eligible; the CLI will show which cards succeeded or failed, and a more stable approach is still being researched
 
 ## AI-Friendly Output
 
@@ -224,6 +242,7 @@ Implemented today:
 - Amex login through Patchright + Chrome profile
 - local JSON cache for cards, benefits, and offers
 - interactive terminal UI
+- offer enrollment from both CLI and interactive UI
 - human-readable CLI views
 - JSON output for automation and AI use
 

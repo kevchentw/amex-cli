@@ -50,8 +50,30 @@ export interface CliOptions {
   forceLogin: boolean;
   offerStatus: "enrolled" | "eligible" | "other" | undefined;
   offerCard: string | undefined;
+  offerCards: string[];
+  offerId: string | undefined;
+  offerSourceId: string | undefined;
+  enrollAllCards: boolean;
   authUsername: string | undefined;
   authPassword: string | undefined;
+}
+
+export interface OfferEnrollmentTarget {
+  offerId: string;
+  accountNumberProxy: string;
+  last4?: string;
+  cardName?: string;
+  locale?: string;
+}
+
+export interface OfferEnrollmentResult {
+  offerId: string;
+  accountNumberProxy: string;
+  last4?: string;
+  cardName?: string;
+  statusPurpose: string;
+  statusMessage: string;
+  raw: unknown;
 }
 
 export interface AuthSession {

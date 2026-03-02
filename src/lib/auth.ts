@@ -14,6 +14,7 @@ export interface AuthProgressReporter {
 
 export interface AuthLoginOptions extends Pick<CliOptions, "debug"> {
   reporter?: AuthProgressReporter;
+  quiet?: boolean;
 }
 
 const LOGIN_URL = "https://www.americanexpress.com/en-us/account/login/";
@@ -62,35 +63,7 @@ export class PatchrightAmexAuthenticator implements AmexAuthenticator {
         await waitForAuthenticatedState(page, options, loginResult);
         const capturedResponses = await establishGlobalSession(page, options);
 
-        const storageState = await context.storageState();
-        const cookies = await context.cookies();
-        const sessionId = crypto.randomUUID();
-        runtimeSessions.set(sessionId, { context, page });
-        const normalizedCookies = cookies.map((cookie) => ({
-          name: cookie.name,
-          value: cookie.value,
-          domain: cookie.domain,
-          path: cookie.path,
-          ...(cookie.expires > 0 ? { expiresAt: new Date(cookie.expires * 1000).toISOString() } : {}),
-          httpOnly: cookie.httpOnly,
-          secure: cookie.secure,
-        }));
-
-        return {
-          createdAt: new Date().toISOString(),
-          authMethod: "patchright-password",
-          baseUrl: new URL(page.url()).origin,
-          cookies: normalizedCookies,
-          metadata: {
-            finalUrl: page.url(),
-            loginUrl: LOGIN_URL,
-            overviewUrl: OVERVIEW_URL,
-            debug: options.debug,
-            runtimeSessionId: sessionId,
-            capturedResponses,
-          },
-          storageState,
-        };
+        return createAuthSession(context, page, options, capturedResponses);
       } finally {
         loginResponseCapture.dispose();
         stopNetworkDebug();
@@ -102,6 +75,79 @@ export class PatchrightAmexAuthenticator implements AmexAuthenticator {
       throw normalizeLoginError(error);
     }
   }
+
+  async restore(options: AuthLoginOptions = { debug: false }): Promise<AuthSession> {
+    const patchright = await loadPatchright();
+    reportProgress(options, "Launching browser");
+    logDebug(options, "Launching browser channel: chrome");
+    const context = await patchright.chromium.launchPersistentContext(getBrowserProfileDir(), {
+      channel: "chrome",
+      headless: false,
+      ignoreDefaultArgs: ["--enable-automation"],
+    });
+
+    try {
+      const page = await context.newPage();
+      page.setDefaultTimeout(DEFAULT_TIMEOUT_MS);
+      const stopNetworkDebug = attachNetworkDebugging(page, options);
+
+      try {
+        reportProgress(options, "Opening account overview", OVERVIEW_URL);
+        logDebug(options, `Opening overview page: ${OVERVIEW_URL}`);
+        await page.goto(OVERVIEW_URL, { waitUntil: "domcontentloaded" });
+        await page.waitForLoadState("networkidle", { timeout: 15_000 }).catch(() => undefined);
+        const snapshot = await readPageSnapshot(page);
+        if (!looksLoggedIn(snapshot)) {
+          throw new CliError("Saved browser profile is not currently authenticated.");
+        }
+
+        const capturedResponses = await establishGlobalSession(page, options);
+        return createAuthSession(context, page, options, capturedResponses);
+      } finally {
+        stopNetworkDebug();
+      }
+    } catch (error) {
+      await context.close();
+      throw normalizeLoginError(error);
+    }
+  }
+}
+
+async function createAuthSession(
+  context: import("patchright").BrowserContext,
+  page: import("patchright").Page,
+  options: AuthLoginOptions,
+  capturedResponses: Record<string, unknown>,
+): Promise<AuthSession> {
+  const storageState = await context.storageState();
+  const cookies = await context.cookies();
+  const sessionId = crypto.randomUUID();
+  runtimeSessions.set(sessionId, { context, page });
+  const normalizedCookies = cookies.map((cookie) => ({
+    name: cookie.name,
+    value: cookie.value,
+    domain: cookie.domain,
+    path: cookie.path,
+    ...(cookie.expires > 0 ? { expiresAt: new Date(cookie.expires * 1000).toISOString() } : {}),
+    httpOnly: cookie.httpOnly,
+    secure: cookie.secure,
+  }));
+
+  return {
+    createdAt: new Date().toISOString(),
+    authMethod: "patchright-password",
+    baseUrl: new URL(page.url()).origin,
+    cookies: normalizedCookies,
+    metadata: {
+      finalUrl: page.url(),
+      loginUrl: LOGIN_URL,
+      overviewUrl: OVERVIEW_URL,
+      debug: options.debug,
+      runtimeSessionId: sessionId,
+      capturedResponses,
+    },
+    storageState,
+  };
 }
 
 async function establishGlobalSession(
@@ -221,13 +267,13 @@ async function waitForAuthenticatedState(
         addThisDeviceSubmitted = await maybeAddThisDevice(page, options);
       }
       if (Date.now() - lastMfaReminderAt >= 10_000) {
-        notifyMfaWaiting();
+        notifyMfaWaiting(options);
         lastMfaReminderAt = Date.now();
       }
       wasOnMfaVerificationPage = true;
     } else if (wasOnMfaVerificationPage) {
       reportProgress(options, "MFA approved");
-      notifyMfaApproved();
+      notifyMfaApproved(options);
       wasOnMfaVerificationPage = false;
       if (!overviewNavigationStarted) {
         overviewNavigationStarted = true;
@@ -336,11 +382,19 @@ function isCredentialFailure(snapshot: { url: string; title: string; bodyText: s
   );
 }
 
-function notifyMfaWaiting(): void {
+function notifyMfaWaiting(options: AuthLoginOptions): void {
+  if (options.quiet) {
+    return;
+  }
+
   process.stderr.write("Waiting for Amex push approval on the two-step verification page.\n");
 }
 
-function notifyMfaApproved(): void {
+function notifyMfaApproved(options: AuthLoginOptions): void {
+  if (options.quiet) {
+    return;
+  }
+
   process.stderr.write("Amex MFA page completed. Continuing login.\n");
 }
 
@@ -605,13 +659,15 @@ function parseLoginNavigationResponse(responseText: string): LoginNavigationResu
   }
 }
 
-function notifyMfaPrompt(options: Pick<CliOptions, "debug">, redirectUrl?: string): void {
+function notifyMfaPrompt(options: AuthLoginOptions, redirectUrl?: string): void {
   const lines = [
     "Amex MFA is required. Please approve the push notification in the Amex app.",
     redirectUrl ? `After approval, the session should continue to ${redirectUrl}.` : undefined,
   ].filter(Boolean);
 
-  process.stderr.write(`${lines.join("\n")}\n`);
+  if (!options.quiet) {
+    process.stderr.write(`${lines.join("\n")}\n`);
+  }
   logDebug(options, `Detected MFA requirement${redirectUrl ? ` redirectUrl=${redirectUrl}` : ""}`);
 }
 
