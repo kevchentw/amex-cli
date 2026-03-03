@@ -6,6 +6,7 @@ import {
   handleEnrollAllOffers,
   handleEnrollOffer,
   handleInteractive,
+  handleServe,
   handleShow,
   handleSync,
 } from "./commands.js";
@@ -15,6 +16,8 @@ const HELP_TEXT = `amex <command> [options]
 
 Commands:
   interactive                                  Open the interactive app shell (default)
+  ui [--port <port>]                           Open the local web UI in your browser
+  web [--port <port>]                          Alias for ui
   sync [--json] [--debug] [--force-login]     Sync all data from Amex and cache it locally
   show [cards|benefits|offers|all] [--json] [--all|-a]
                                                Read cached data
@@ -39,6 +42,7 @@ Options:
   --source-id <value> Stable source id for enroll offer
   --all-cards         Enroll the offer on every eligible cached card
   --force-login       Skip cached session and force a fresh browser login
+  --port <value>      Port for the local web UI server
 `;
 
 export async function runCli(argv: string[]): Promise<void> {
@@ -66,6 +70,11 @@ async function dispatch(argv: string[]): Promise<void> {
         throw new CliError("`sync` no longer accepts a target. Use `amex sync` to fetch everything.");
       }
       await handleSync(options);
+      return;
+    case "ui":
+    case "web":
+    case "serve":
+      await handleServe(options);
       return;
     case "show":
       await handleShow(parseTarget(arg1), options);
@@ -146,6 +155,7 @@ function parseOptions(args: Array<string | undefined>): CliOptions {
     debug: args.includes("--debug"),
     includeCanceled: args.includes("--all") || args.includes("-a"),
     forceLogin: args.includes("--force-login"),
+    port: readPortValue(args, "--port"),
     offerStatus: offerStatus as CliOptions["offerStatus"],
     offerCard: readRawOptionValue(args, "--card"),
     offerCards: readRawOptionValues(args, "--card"),
@@ -155,6 +165,20 @@ function parseOptions(args: Array<string | undefined>): CliOptions {
     authUsername: readRawOptionValue(args, "--username"),
     authPassword: readRawOptionValue(args, "--password"),
   };
+}
+
+function readPortValue(args: Array<string | undefined>, option: string): number | undefined {
+  const value = readRawOptionValue(args, option);
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isInteger(parsed) || parsed <= 0 || parsed > 65535) {
+    throw new CliError(`Expected ${option} to be a valid port number.`);
+  }
+
+  return parsed;
 }
 
 function isOption(value: string): boolean {

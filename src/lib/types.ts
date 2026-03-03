@@ -48,6 +48,7 @@ export interface CliOptions {
   debug: boolean;
   includeCanceled: boolean;
   forceLogin: boolean;
+  port: number | undefined;
   offerStatus: "enrolled" | "eligible" | "other" | undefined;
   offerCard: string | undefined;
   offerCards: string[];

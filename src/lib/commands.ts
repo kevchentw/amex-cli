@@ -9,6 +9,7 @@ import { CacheStore } from "./cache.js";
 import { KeytarCredentialStore } from "./credentials.js";
 import { CliError } from "./errors.js";
 import { colorize, printJson, printText } from "./output.js";
+import { startWebServer } from "./web-server.js";
 import type {
   AuthSession,
   Benefit,
@@ -31,6 +32,7 @@ const DEFAULT_CLI_OPTIONS: CliOptions = {
   debug: false,
   includeCanceled: false,
   forceLogin: false,
+  port: undefined,
   offerStatus: undefined,
   offerCard: undefined,
   offerCards: [],
@@ -371,6 +373,10 @@ export async function handleInteractive(): Promise<void> {
   if (interactiveSession) {
     await disposeRuntimeSession(interactiveSession);
   }
+}
+
+export async function handleServe(options: CliOptions): Promise<void> {
+  await startWebServer(options);
 }
 
 export async function handleAuthSet(options: CliOptions): Promise<void> {

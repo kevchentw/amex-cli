@@ -18,6 +18,7 @@ Typical use cases:
 - ask an AI assistant to summarize active benefits you have not used
 - filter all offers for a specific card and pass them into another tool
 - add an offer to one card or all eligible cards from the terminal
+- open a local browser UI instead of using the terminal UI
 - keep a local cache of cards, benefits, and offers for later analysis
 - browse everything in a terminal UI without digging through multiple Amex pages
 
@@ -64,6 +65,19 @@ Open the interactive app:
 npx amex-cli
 ```
 
+Or start a local browser UI:
+
+```bash
+npx amex-cli ui
+```
+
+Recommended browser UI flow:
+
+1. store credentials with `npx amex-cli auth set`
+2. run `npx amex-cli sync` once to build the local cache
+3. run `npx amex-cli ui`
+4. use the browser UI to review cards, benefits, offers, and trigger offer enrollment actions
+
 `sync` currently opens a visible Chrome window for login because the Amex sign-in flow is not reliable in pure headless mode yet.
 
 ## What it syncs
@@ -106,6 +120,9 @@ Main commands:
 ```bash
 npx amex-cli
 npx amex-cli interactive
+npx amex-cli ui
+npx amex-cli web
+npx amex-cli ui --port 43110
 npx amex-cli sync
 npx amex-cli sync --debug
 npx amex-cli show cards
@@ -124,6 +141,7 @@ npx amex-cli auth clear
 Notes:
 
 - running `npx amex-cli` with no command opens the interactive UI
+- `ui` / `web` starts the local web UI on `127.0.0.1` and opens the browser automatically
 - `sync` opens a visible Chrome window for login and refreshes local cache
 - `sync --debug` keeps the browser visible and prints extra auth/network logs
 - `enroll offer` can add one offer to one card, multiple cards, or all eligible cards for that offer
@@ -151,6 +169,24 @@ The `Offers` tab can also enroll offers:
 Current limitation:
 
 - multi-card enrollment can still partially fail even when several cards are eligible; the CLI will show which cards succeeded or failed, and a more stable approach is still being researched
+
+## Local Web UI
+
+If you prefer a browser over the terminal UI, you can start a local web app:
+
+```bash
+npx amex-cli ui
+```
+
+The web UI runs entirely on your machine and uses the same local cache and browser profile as the CLI.
+
+It currently supports:
+
+- viewing cards, benefits, and offers in a browser
+- triggering `sync`
+- enrolling a focused offer on selected cards
+- enrolling a focused offer on all eligible cards
+- enrolling all eligible offers from the current cache
 
 ## AI-Friendly Output
 
